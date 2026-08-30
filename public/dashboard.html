@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>借用登记系统 - 工作台</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔐</text></svg>">
   <link rel="stylesheet" href="/css/style.css">
   <style>
     body { display: flex; min-height: 100vh; }
@@ -52,6 +53,9 @@
     .confirm-mark { display: inline-flex; align-items: center; gap: 4px; background: #e7f3ff; color: #1559a5; border-radius: 6px; padding: 3px 8px; font-size: 12px; font-weight: 600; }
     .confirm-mark::before { content: "✔"; }
     .red-text { color: var(--danger); font-weight: 700; }
+    /* 默认密码提醒横幅（橙色） */
+    .overdue-banner.warn { background: linear-gradient(90deg, #e6a700, #f08c00); box-shadow: 0 2px 8px rgba(230,167,0,.3); }
+    .topbar .btn.sm { padding: 5px 12px; }
 
     /* 移动端 */
     @media (max-width: 820px) {
@@ -97,10 +101,22 @@
         <span id="userRole" style="font-size:12px;color:var(--text-2);"></span>
         <div class="avatar" id="userAvatar"></div>
         <span id="userName"></span>
+        <button class="btn sm" id="btnChangePwd" title="修改当前账号的登录密码">修改密码</button>
       </div>
     </div>
 
     <div class="content">
+      <!-- 默认密码提醒横幅 -->
+      <div class="overdue-banner warn" id="pwdBanner" style="display:none;">
+        <span class="bell">⚠️</span>
+        <div>
+          <div>当前账号仍在使用出厂默认密码，存在安全风险</div>
+          <div class="detail">请在右上角点击「修改密码」设置新密码。</div>
+        </div>
+        <button class="btn sm" style="margin-left:auto;background:#fff;border:none;color:#9a6a00;font-weight:700;" onclick="openPwdModal()">立即修改</button>
+        <button class="close" onclick="document.getElementById('pwdBanner').style.display='none'">✕</button>
+      </div>
+
       <!-- 全局超期提醒横幅 -->
       <div class="overdue-banner" id="overdueBanner">
         <span class="bell">🚨</span>
@@ -217,6 +233,7 @@
           <div class="toolbar" style="justify-content:center;">
             <input type="text" id="qrBase" placeholder="访问地址（默认自动检测本机局域网 IP）" style="max-width:420px;">
             <button class="btn primary" onclick="genQR()">生成 / 刷新二维码</button>
+            <button class="btn" onclick="printQR()">🖨 打印二维码</button>
           </div>
           <div class="qr-tip">
             <b>使用说明：</b><br>
@@ -237,10 +254,12 @@
             <button class="btn primary" style="justify-content:center;padding:18px;" onclick="exportCSV('all')">📄 导出全部借用记录</button>
             <button class="btn" style="justify-content:center;padding:18px;" onclick="exportCSV('active')">📄 导出当前借用中记录</button>
             <button class="btn" style="justify-content:center;padding:18px;" onclick="exportCSV('archive')">📄 导出归档记录</button>
+            <button class="btn" id="btnBackup" style="justify-content:center;padding:18px;display:none;" onclick="location.href='/api/backup'">💾 备份全部数据（管理员）</button>
           </div>
           <div class="qr-tip" style="margin-top:18px;">
             导出文件为 CSV 格式（UTF-8 带 BOM），使用 Excel / WPS 直接打开即可正常显示中文。
-            导出的字段包含：借用单号、借用人、物品类型、物品名称、数量、借用时间、计划归还时间、实际归还时间、状态、确认人、确认时间、归还人、是否超期、备注、创建时间。
+            导出的字段包含：借用单号、借用人、物品类型、物品名称、数量、借用时间、计划归还时间、实际归还时间、状态、确认人、确认时间、归还人、是否超期、备注、创建时间。<br>
+            <b>数据备份</b>（仅管理员）：下载包含账号、借用记录、库存的 JSON 备份文件，建议定期备份；恢复时用备份文件覆盖 <code>data/</code> 目录下的同名 JSON 文件后重启服务。
           </div>
         </div>
       </section>
@@ -345,6 +364,22 @@
     </div>
   </div>
 
+  <!-- ============ 修改自己密码弹窗 ============ -->
+  <div class="modal-mask" id="pwdModal">
+    <div class="modal" style="max-width:440px;">
+      <div class="modal-head"><h3>修改我的密码</h3><button class="close-x" onclick="closeModal('pwdModal')">✕</button></div>
+      <div class="modal-body">
+        <div class="field"><label>当前密码<span class="req">*</span></label><input type="password" id="pwdCurrent" autocomplete="current-password" placeholder="请输入当前密码"></div>
+        <div class="field"><label>新密码<span class="req">*</span></label><input type="password" id="pwdNew" autocomplete="new-password" placeholder="至少 6 位，建议字母+数字组合"></div>
+        <div class="field"><label>确认新密码<span class="req">*</span></label><input type="password" id="pwdNew2" autocomplete="new-password" placeholder="再次输入新密码"></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" onclick="closeModal('pwdModal')">取消</button>
+        <button class="btn primary" id="btnSavePwd" onclick="saveMyPassword()">保存新密码</button>
+      </div>
+    </div>
+  </div>
+
   <div id="toast"></div>
 
   <script>
@@ -387,12 +422,20 @@
         $('#userName').textContent = currentUser.displayName + '（' + (currentUser.role === 'admin' ? '管理员' : '运行人员') + '）';
         $('#userAvatar').textContent = currentUser.displayName.slice(0, 1);
         $('#userRole').textContent = currentUser.role === 'admin' ? '管理员' : '运行人员';
-        if (currentUser.role === 'admin') $('#menuUsers').style.display = 'flex';
+        if (currentUser.role === 'admin') {
+          $('#menuUsers').style.display = 'flex';
+          $('#btnBackup').style.display = 'flex';
+        }
+        if (d.mustChangePassword) $('#pwdBanner').style.display = 'flex';
         loadStats(); loadActive(); loadArchive();
         if (currentUser.role === 'admin') loadUsers();
         loadInventory();
         genQR();
-        setInterval(() => { loadStats(); }, 30000);
+        setInterval(() => {
+          loadStats(); loadActive(); // 多人值守时自动同步最新数据
+          if ($('#sec-archive').classList.contains('active')) loadArchive();
+          if ($('#sec-inv').classList.contains('active')) loadInventory();
+        }, 30000);
       } catch (e) {
         location.href = '/login.html';
       }
@@ -401,6 +444,33 @@
       await api('/api/logout', { method: 'POST' }).catch(() => {});
       location.href = '/login.html';
     });
+
+    /* ============ 修改我的密码 ============ */
+    function openPwdModal() {
+      $('#pwdCurrent').value = ''; $('#pwdNew').value = ''; $('#pwdNew2').value = '';
+      openModal('pwdModal');
+      setTimeout(() => $('#pwdCurrent').focus(), 50);
+    }
+    $('#btnChangePwd').addEventListener('click', openPwdModal);
+    async function saveMyPassword() {
+      const cur = $('#pwdCurrent').value;
+      const n1 = $('#pwdNew').value, n2 = $('#pwdNew2').value;
+      if (!cur) return showToast('请输入当前密码', 'err');
+      if (n1.length < 6) return showToast('新密码至少 6 位', 'err');
+      if (n1 !== n2) return showToast('两次输入的新密码不一致', 'err');
+      const btn = $('#btnSavePwd');
+      btn.disabled = true;
+      try {
+        await api('/api/me/password', { method: 'POST', body: JSON.stringify({ currentPassword: cur, newPassword: n1 }) });
+        closeModal('pwdModal');
+        $('#pwdBanner').style.display = 'none';
+        showToast('密码已修改，下次登录请使用新密码', 'ok');
+      } catch (e) {
+        showToast(e.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    }
 
     /* ============ 菜单切换 ============ */
     document.querySelectorAll('.menu a').forEach(a => {
@@ -562,7 +632,7 @@
           '<div class="item"><div class="k">归还信息</div><div class="v">' + (b.returnedBy ? esc(b.returnedBy) + ' ' + fmt(b.returnedAt) : '—') + '</div></div>' +
           (b.cancelReason ? '<div class="item full"><div class="k">取消原因</div><div class="v">' + esc(b.cancelReason) + '</div></div>' : '') +
           (b.operatorNote ? '<div class="item full"><div class="k">运行人员备注</div><div class="v">' + esc(b.operatorNote) + '</div></div>' : '') +
-          '<div class="item full"><div class="k">手写签字</div><div class="v"><img class="sig-img" src="' + b.signature + '" alt="签字"></div></div>' +
+          '<div class="item full"><div class="k">手写签字</div><div class="v">' + (b.signature && /^data:image\/png;base64,/.test(b.signature) ? '<img class="sig-img" src="' + esc(b.signature) + '" alt="签字">' : '—') + '</div></div>' +
           '</div>' +
           '<div class="history"><div style="font-weight:600;margin-bottom:8px;">操作记录</div>' + (hist || '<div class="empty">无</div>') + '</div>';
         openModal('detailModal');
@@ -643,31 +713,40 @@
 
     /* ============ 归档 ============ */
     let archiveList = [];
+    const ARCHIVE_PAGE_SIZE = 100;
+    let archiveShown = ARCHIVE_PAGE_SIZE;
     async function loadArchive() {
       try {
         const d = await api('/api/borrows?scope=archive');
         archiveList = d.list;
-        const kw = $('#archiveSearch').value.trim().toLowerCase();
-        const list = kw ? archiveList.filter(b => (b.borrowerName + b.no + itemsHtml(b, { inline: true })).toLowerCase().includes(kw)) : archiveList;
-        $('#archiveEmpty').style.display = list.length ? 'none' : 'block';
-        $('#archiveBody').innerHTML = list.map(b => {
-          const st = statusMap[b.status];
-          const endTime = b.status === 'returned' ? b.returnedAt : (b.status === 'cancelled' ? b.updatedAt : b.createdAt);
-          const del = currentUser.role === 'admin' ? '<button class="btn sm danger" onclick="delRecord(\'' + b.id + '\')">删除</button>' : '';
-          return '<tr>' +
-            '<td>' + esc(b.no) + '</td>' +
-            '<td>' + esc(b.borrowerName) + '</td>' +
-            '<td>' + itemsHtml(b) + '</td>' +
-            '<td>' + itemsCount(b) + '</td>' +
-            '<td class="t">' + fmt(b.borrowTime) + '</td>' +
-            '<td class="t">' + (b.status === 'returned' ? fmt(b.returnedAt) : '—') + '</td>' +
-            '<td><span class="' + st[1] + '">' + st[0] + '</span>' + (b.cancelReason ? '<div style="font-size:11px;color:var(--text-2);">' + esc(b.cancelReason) + '</div>' : '') + '</td>' +
-            '<td>' + esc(b.confirmedBy || '—') + '</td>' +
-            '<td><div class="actions"><button class="btn sm" onclick="showDetail(\'' + b.id + '\')">详情</button>' + del + '</div></td></tr>';
-        }).join('');
+        archiveShown = ARCHIVE_PAGE_SIZE; // 重新拉取时重置分页
+        renderArchive();
       } catch (e) { showToast(e.message, 'err'); }
     }
-    $('#archiveSearch').addEventListener('input', loadArchive);
+    function renderArchive() {
+      const kw = $('#archiveSearch').value.trim().toLowerCase();
+      const filtered = kw ? archiveList.filter(b => (b.borrowerName + b.no + itemsHtml(b, { inline: true })).toLowerCase().includes(kw)) : archiveList;
+      const list = filtered.slice(0, archiveShown);
+      $('#archiveEmpty').style.display = list.length ? 'none' : 'block';
+      $('#archiveBody').innerHTML = list.map(b => {
+        const st = statusMap[b.status];
+        const del = currentUser.role === 'admin' ? '<button class="btn sm danger" onclick="delRecord(\'' + b.id + '\')">删除</button>' : '';
+        return '<tr>' +
+          '<td>' + esc(b.no) + '</td>' +
+          '<td>' + esc(b.borrowerName) + '</td>' +
+          '<td>' + itemsHtml(b) + '</td>' +
+          '<td>' + itemsCount(b) + '</td>' +
+          '<td class="t">' + fmt(b.borrowTime) + '</td>' +
+          '<td class="t">' + (b.status === 'returned' ? fmt(b.returnedAt) : '—') + '</td>' +
+          '<td><span class="' + st[1] + '">' + st[0] + '</span>' + (b.cancelReason ? '<div style="font-size:11px;color:var(--text-2);">' + esc(b.cancelReason) + '</div>' : '') + '</td>' +
+          '<td>' + esc(b.confirmedBy || '—') + '</td>' +
+          '<td><div class="actions"><button class="btn sm" onclick="showDetail(\'' + b.id + '\')">详情</button>' + del + '</div></td></tr>';
+      }).join('') +
+        (filtered.length > archiveShown
+          ? '<tr><td colspan="9" style="text-align:center;padding:12px;color:var(--text-2);">已显示前 ' + archiveShown + ' 条（共 ' + filtered.length + ' 条）<button class="btn sm" style="margin-left:10px;" onclick="archiveShown += ' + ARCHIVE_PAGE_SIZE + ';renderArchive()">显示更多</button></td></tr>'
+          : '');
+    }
+    $('#archiveSearch').addEventListener('input', renderArchive);
     function delRecord(id) {
       if (!confirm('确认删除该归档记录？此操作不可恢复！')) return;
       api('/api/borrows/' + id, { method: 'DELETE' }).then(() => { showToast('已删除', 'ok'); loadArchive(); loadStats(); })
@@ -803,6 +882,19 @@
         $('#qrImg').src = d.qrDataUrl;
         $('#qrUrl').textContent = d.url;
       } catch (e) { showToast(e.message, 'err'); }
+    }
+    function printQR() {
+      const src = $('#qrImg').src;
+      if (!src) return showToast('请先生成二维码', 'err');
+      const w = window.open('', '_blank');
+      if (!w) return showToast('浏览器拦截了打印窗口，请允许弹出窗口', 'err');
+      w.document.write('<!DOCTYPE html><html><head><meta charset="utf-8"><title>借用登记二维码</title>' +
+        '<style>body{font-family:"Microsoft YaHei",sans-serif;text-align:center;margin-top:40px;}h2{margin-bottom:8px;}p{color:#555;word-break:break-all;max-width:420px;margin:10px auto;font-size:13px;}</style>' +
+        '</head><body><h2>钥匙 / 工具 / 标识牌 借用登记</h2>' +
+        '<p>请用手机微信扫描二维码，登记借用与查询归还状态</p>' +
+        '<img src="' + src + '" style="width:360px;height:360px;" onload="setTimeout(function(){window.print()},200)">' +
+        '<p>' + esc($('#qrUrl').textContent || '') + '</p></body></html>');
+      w.document.close();
     }
 
     /* ============ 用户管理 ============ */

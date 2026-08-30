@@ -2,8 +2,9 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>借用登记 · 归还查询</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📦</text></svg>">
   <link rel="stylesheet" href="/css/style.css">
   <style>
     body { background: #eef1f6; padding: 14px; }
@@ -249,7 +250,16 @@
     canvas.addEventListener('touchstart', start, { passive: false });
     canvas.addEventListener('touchmove', move, { passive: false });
     canvas.addEventListener('touchend', end);
-    function loadSig(dataUrl) { const img = new Image(); img.onload = () => { ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.drawImage(img, 0, 0); }; img.src = dataUrl; }
+    function loadSig(dataUrl) {
+      const img = new Image();
+      img.onload = () => {
+        const rect = canvas.getBoundingClientRect();
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        // 按画布 CSS 尺寸绘制，避免高分屏下签字被放大/缩小
+        ctx.drawImage(img, 0, 0, rect.width, rect.height);
+      };
+      img.src = dataUrl;
+    }
     function isEmpty() {
       const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
       for (let i = 3; i < data.length; i += 4) if (data[i] > 0) return false;
@@ -517,7 +527,8 @@
       if (r.ok) { renderTrack(r.data.record); }
       else { $('#trackResult').innerHTML = ''; $('#trackErr').textContent = r.data.error || '未找到对应记录'; }
     });
-    $('#qNo, #qName').addEventListener('keydown', e => { if (e.key === 'Enter') $('#btnQuery').click(); });
+    // 两个输入框都支持回车查询（querySelectorAll，避免只有第一个框生效）
+    document.querySelectorAll('#qNo, #qName').forEach(el => el.addEventListener('keydown', e => { if (e.key === 'Enter') $('#btnQuery').click(); }));
 
     /* 页面加载：本机有登记过的记录 → 自动切到查询页并显示归还状态 */
     (function () {

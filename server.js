@@ -6,6 +6,7 @@
 
 const path = require('path');
 const os = require('os');
+const fs = require('fs');
 const crypto = require('crypto');
 const express = require('express');
 const session = require('express-session');
@@ -16,9 +17,40 @@ const store = require('./lib/store');
 const PORT = Number(process.env.PORT) || 10800;
 const HOST = process.env.HOST || '0.0.0.0'; // 监听所有网卡，允许手机同局域网访问
 
+/* ---------------- 会话密钥：优先环境变量，否则首次启动随机生成并持久化到 data/ ----------------
+ * 避免在源码中硬编码密钥（重启后仍保持同一密钥，登录态不丢失）。
+ */
+function loadSessionSecret() {
+  if (process.env.SESSION_SECRET) return process.env.SESSION_SECRET;
+  try {
+    const f = path.join(store.DATA_DIR, 'session-secret');
+    if (fs.existsSync(f)) {
+      const s = fs.readFileSync(f, 'utf8').trim();
+      if (s) return s;
+    }
+    const s = crypto.randomBytes(32).toString('hex');
+    fs.mkdirSync(store.DATA_DIR, { recursive: true });
+    fs.writeFileSync(f, s, { encoding: 'utf8', mode: 0o600 });
+    return s;
+  } catch (e) {
+    return crypto.randomBytes(32).toString('hex');
+  }
+}
+
 const app = express();
-app.use(express.json({ limit: '8mb' })); // 手写签字图片可能较大
-app.use(express.urlencoded({ extended: true, limit: '8mb' }));
+app.disable('x-powered-by');
+app.use(express.json({ limit: '3mb' })); // 手写签字图片（已限制 2MB）
+app.use(express.urlencoded({ extended: true, limit: '3mb' }));
+
+/* 安全响应头；API 响应禁止缓存（含借用记录等业务数据） */
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  if (req.path.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store');
+  next();
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // 页面路由
@@ -26,15 +58,53 @@ app.get('/', (req, res) => res.redirect('/dashboard.html'));
 app.get('/dashboard', (req, res) => res.sendFile(path.join(__dirname, 'public', 'dashboard.html')));
 app.get('/borrow', (req, res) => res.sendFile(path.join(__dirname, 'public', 'borrow.html')));
 app.get('/track', (req, res) => res.sendFile(path.join(__dirname, 'public', 'track.html')));
+app.get('/favicon.ico', (req, res) => res.status(204).end());
 
 /* ---------------- 会话 ---------------- */
 app.use(session({
   name: 'kbrsid',
-  secret: 'key-borrow-register-secret-2026',
+  secret: loadSessionSecret(),
   resave: false,
   saveUninitialized: false,
-  cookie: { httpOnly: true, maxAge: 1000 * 60 * 60 * 12 } // 12 小时
+  cookie: { httpOnly: true, sameSite: 'lax', maxAge: 1000 * 60 * 60 * 12 } // 12 小时；sameSite=lax 防 CSRF
 }));
+
+/* ---------------- 简单内存限流 ----------------
+ * 同一 key 在时间窗内最多 maxHits 次，超出返回 429。
+ * 用于登录防暴力破解、公开查询接口防刷（单进程内存版，重启即清零，够用）。
+ */
+function rateLimit({ windowMs, maxHits, keyOf, message }) {
+  const hits = new Map();
+  const timer = setInterval(() => {
+    const now = Date.now();
+    for (const [k, v] of hits) if (v.reset <= now) hits.delete(k);
+  }, windowMs);
+  timer.unref(); // 不阻止进程退出
+  return (req, res, next) => {
+    const key = keyOf(req);
+    const now = Date.now();
+    const rec = hits.get(key);
+    if (!rec || now > rec.reset) {
+      hits.set(key, { count: 1, reset: now + windowMs });
+      return next();
+    }
+    rec.count += 1;
+    if (rec.count > maxHits) return res.status(429).json({ error: message });
+    next();
+  };
+}
+
+const clientIP = req => req.headers['x-forwarded-for'] ? String(req.headers['x-forwarded-for']).split(',')[0].trim() : req.ip;
+const loginLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, maxHits: 8,
+  keyOf: req => clientIP(req) + '|' + String((req.body || {}).username || '').toLowerCase(),
+  message: '尝试次数过多，请 10 分钟后再试'
+});
+const trackLimiter = rateLimit({
+  windowMs: 60 * 1000, maxHits: 30,
+  keyOf: req => clientIP(req),
+  message: '查询过于频繁，请稍后再试'
+});
 
 /* ---------------- 工具函数 ---------------- */
 function getLanIP() {
@@ -87,18 +157,18 @@ function genBorrowNo(borrows) {
   return prefix + String(max + 1).padStart(3, '0');
 }
 
-/* 多物品：规范化物品清单（兼容旧版单物品字段） */
+/* 多物品：规范化物品清单（兼容旧版单物品字段），并做长度/数量上限校验 */
 function normalizeItems(input) {
   // input 可能是 {itemType,itemName,quantity} 或 [{...},...]
   let arr = Array.isArray(input) ? input : (input && !Array.isArray(input) ? [input] : []);
   const out = [];
-  for (const it of arr) {
+  for (const it of arr.slice(0, 20)) { // 单笔最多 20 件物品
     if (!it) continue;
-    const type = String(it.itemType || it.type || '').trim() || '其他';
-    const name = String(it.itemName || it.name || '').trim();
+    const type = String(it.itemType || it.type || '').trim().slice(0, 20) || '其他';
+    const name = String(it.itemName || it.name || '').trim().slice(0, 50);
     const qty = parseInt(it.quantity ?? it.qty, 10);
     if (!name) continue;
-    out.push({ itemType: type, itemName: name, quantity: Number.isInteger(qty) && qty >= 1 ? qty : 1 });
+    out.push({ itemType: type, itemName: name, quantity: Number.isInteger(qty) && qty >= 1 ? Math.min(qty, 999) : 1 });
   }
   return out;
 }
@@ -168,26 +238,47 @@ function publicBorrow(b) {
   };
 }
 
-/* ---------------- 权限中间件 ---------------- */
+/* ---------------- 权限中间件 ----------------
+ * 每次请求回查用户表：账号被停用/删除后登录态立即失效；角色、显示名变更实时生效。
+ */
+function sessionUser(req) {
+  const su = req.session.user;
+  if (!su) return null;
+  const u = store.loadUsers().find(x => x.id === su.id && x.status === 'active');
+  if (!u) return null;
+  return { id: u.id, username: u.username, displayName: u.displayName, role: u.role };
+}
 function requireAuth(req, res, next) {
-  if (!req.session.user) return res.status(401).json({ error: '未登录或登录已过期' });
+  const u = sessionUser(req);
+  if (!u) return res.status(401).json({ error: '未登录、登录已过期或账号已停用' });
+  req.session.user = u; // 同步最新资料
   next();
 }
 function requireAdmin(req, res, next) {
-  if (!req.session.user) return res.status(401).json({ error: '未登录或登录已过期' });
-  if (req.session.user.role !== 'admin') return res.status(403).json({ error: '仅管理员可执行此操作' });
-  next();
+  requireAuth(req, res, () => {
+    if (req.session.user.role !== 'admin') return res.status(403).json({ error: '仅管理员可执行此操作' });
+    next();
+  });
 }
 function requireStaff(req, res, next) {
-  if (!req.session.user) return res.status(401).json({ error: '未登录或登录已过期' });
-  if (req.session.user.role !== 'admin' && req.session.user.role !== 'operator') {
-    return res.status(403).json({ error: '无权限执行此操作' });
-  }
-  next();
+  requireAuth(req, res, () => {
+    if (req.session.user.role !== 'admin' && req.session.user.role !== 'operator') {
+      return res.status(403).json({ error: '无权限执行此操作' });
+    }
+    next();
+  });
+}
+
+/* 出厂内置账号的默认密码，仅用于“请修改默认密码”提醒标记 */
+const DEFAULT_PASSWORDS = { admin: 'admin123', operator1: '123456', operator2: '123456' };
+function isDefaultPassword(u) {
+  const def = DEFAULT_PASSWORDS[u && u.username];
+  if (!def) return false;
+  try { return store.verifyPassword(def, u.passwordSalt, u.passwordHash); } catch (e) { return false; }
 }
 
 /* ================= 认证 ================= */
-app.post('/api/login', (req, res) => {
+app.post('/api/login', loginLimiter, (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: '请输入用户名和密码' });
   const users = store.loadUsers();
@@ -200,7 +291,11 @@ app.post('/api/login', (req, res) => {
   req.session.user = {
     id: u.id, username: u.username, displayName: u.displayName, role: u.role
   };
-  res.json({ ok: true, user: { id: u.id, username: u.username, displayName: u.displayName, role: u.role } });
+  res.json({
+    ok: true,
+    user: { id: u.id, username: u.username, displayName: u.displayName, role: u.role },
+    mustChangePassword: isDefaultPassword(u) // 仍在使用出厂默认密码时提醒修改
+  });
 });
 
 app.post('/api/logout', (req, res) => {
@@ -208,7 +303,34 @@ app.post('/api/logout', (req, res) => {
 });
 
 app.get('/api/me', requireAuth, (req, res) => {
-  res.json({ user: req.session.user });
+  const u = store.loadUsers().find(x => x.id === req.session.user.id);
+  res.json({ user: req.session.user, mustChangePassword: u ? isDefaultPassword(u) : false });
+});
+
+/* 登录用户修改自己的密码（需验证当前密码） */
+app.post('/api/me/password', requireAuth, (req, res) => {
+  const { currentPassword, newPassword } = req.body || {};
+  const users = store.loadUsers();
+  const u = users.find(x => x.id === req.session.user.id);
+  if (!u) return res.status(404).json({ error: '用户不存在' });
+  if (!store.verifyPassword(String(currentPassword || ''), u.passwordSalt, u.passwordHash)) {
+    return res.status(400).json({ error: '当前密码不正确' });
+  }
+  const np = String(newPassword || '');
+  if (np.length < 6) return res.status(400).json({ error: '新密码至少 6 位' });
+  if (np.length > 64) return res.status(400).json({ error: '新密码最长 64 位' });
+  if (np === String(currentPassword)) return res.status(400).json({ error: '新密码不能与当前密码相同' });
+  const { salt, hash } = store.hashPassword(np);
+  u.passwordSalt = salt;
+  u.passwordHash = hash;
+  u.passwordChangedAt = nowISO();
+  store.saveUsers(users);
+  res.json({ ok: true });
+});
+
+/* ================= 健康检查 ================= */
+app.get('/api/health', (req, res) => {
+  res.json({ ok: true, uptime: Math.round(process.uptime()) });
 });
 
 /* ================= 物品库存：借用人可用候选（公开） =================
@@ -237,8 +359,12 @@ app.post('/api/borrows', (req, res) => {
   if (!items.length) items = normalizeItems({ itemType: b.itemType, itemName: b.itemName, quantity: b.quantity });
 
   if (!borrowerName) return res.status(400).json({ error: '请填写借用人姓名' });
+  if (borrowerName.length > 30) return res.status(400).json({ error: '借用人姓名最长 30 字' });
   if (!signature) return res.status(400).json({ error: '请进行手写签字' });
-  if (signature.length < 100) return res.status(400).json({ error: '手写签字内容无效，请重新签字' });
+  // 签字必须是 PNG 图片的 data URL，且不超过 2MB（同时防止把任意文本/脚本存进签字字段）
+  if (!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(signature) || signature.length > 2 * 1024 * 1024) {
+    return res.status(400).json({ error: '手写签字内容无效，请重新签字' });
+  }
   if (!items.length) return res.status(400).json({ error: '请至少填写一件借用物品' });
   // 库存校验：导入过库存的物品，被借出后不可超量借用
   const invList = store.loadInventory();
@@ -255,6 +381,14 @@ app.post('/api/borrows', (req, res) => {
   if (!plannedReturnTime) return res.status(400).json({ error: '计划归还时间无效' });
   if (plannedReturnTime.getTime() < borrowTime.getTime()) {
     return res.status(400).json({ error: '计划归还时间不能早于借用时间' });
+  }
+  // 时间合理性：借用时间距离现在最多 ±7 天（允许补登）；借期最长 90 天
+  const now = Date.now();
+  if (Math.abs(borrowTime.getTime() - now) > 7 * 24 * 3600 * 1000) {
+    return res.status(400).json({ error: '借用时间需在当前时间前后 7 天以内' });
+  }
+  if (plannedReturnTime.getTime() - borrowTime.getTime() > 90 * 24 * 3600 * 1000) {
+    return res.status(400).json({ error: '借期最长 90 天，请修改计划归还时间' });
   }
 
   const borrows = store.loadBorrows();
@@ -277,6 +411,7 @@ app.post('/api/borrows', (req, res) => {
     returnedBy: null, returnedAt: null,
     cancelReason: '',
     createdAt: nowISO(),
+    updatedAt: nowISO(),
     archived: false,
     history: [{
       action: '提交借用申请', by: borrowerName, at: nowISO(),
@@ -320,7 +455,7 @@ function trackStatus(b) {
   };
 }
 
-app.get('/api/track/status', (req, res) => {
+app.get('/api/track/status', trackLimiter, (req, res) => {
   const token = String(req.query.token || '').trim();
   const no = String(req.query.no || '').trim();
   const name = String(req.query.name || '').trim();
@@ -380,9 +515,10 @@ app.put('/api/borrows/:id', requireStaff, (req, res) => {
   }
   const p = req.body || {};
   const changes = [];
-  const setStr = (key, label) => {
+  const setStr = (key, label, maxLen) => {
     if (typeof p[key] === 'string' && p[key].trim() !== '') {
-      if (b[key] !== p[key].trim()) { b[key] = p[key].trim(); changes.push(label); }
+      const v = p[key].trim().slice(0, maxLen || 200);
+      if (b[key] !== v) { b[key] = v; changes.push(label); }
     }
   };
   const setNum = (key, label) => {
@@ -391,8 +527,8 @@ app.put('/api/borrows/:id', requireStaff, (req, res) => {
       if (Number.isInteger(n) && n >= 1 && n !== b[key]) { b[key] = n; changes.push(label); }
     }
   };
-  setStr('borrowerName', '借用人');
-  setStr('operatorNote', '备注');
+  setStr('borrowerName', '借用人', 30);
+  setStr('operatorNote', '备注', 200);
   // 多物品清单修改
   if (Array.isArray(p.items)) {
     const newItems = normalizeItems(p.items);
@@ -425,11 +561,15 @@ app.put('/api/borrows/:id', requireStaff, (req, res) => {
       }
     }
   }
-  // 支持运行人员修改借用人手写签字（可选）
-  if (typeof p.signature === 'string' && p.signature.length > 100 && p.signature !== b.signature) {
+  // 支持运行人员修改借用人手写签字（可选），同样要求 PNG data URL 且不超过 2MB
+  if (typeof p.signature === 'string' && p.signature !== b.signature) {
+    if (!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(p.signature) || p.signature.length > 2 * 1024 * 1024) {
+      return res.status(400).json({ error: '签字内容无效，请重新签字' });
+    }
     b.signature = p.signature; changes.push('手写签字');
   }
   if (changes.length > 0) {
+    b.updatedAt = nowISO();
     b.history = b.history || [];
     b.history.push({ action: '运行人员修改', by: req.session.user.displayName, at: nowISO(), note: '修改内容：' + changes.join('、') });
     store.saveBorrows(borrows);
@@ -448,6 +588,7 @@ app.post('/api/borrows/:id/confirm', requireStaff, (req, res) => {
   b.status = 'confirmed';
   b.confirmedBy = req.session.user.displayName;
   b.confirmedAt = nowISO();
+  b.updatedAt = b.confirmedAt;
   b.history = b.history || [];
   b.history.push({ action: '确认借用', by: req.session.user.displayName, at: b.confirmedAt, note: '确认借用申请，放行物品' });
   store.saveBorrows(borrows);
@@ -465,6 +606,7 @@ app.post('/api/borrows/:id/return', requireStaff, (req, res) => {
   b.status = 'returned';
   b.returnedBy = req.session.user.displayName;
   b.returnedAt = nowISO();
+  b.updatedAt = b.returnedAt;
   b.archived = true; // 归还完成后归档，不再显示在借用目录
   b.history = b.history || [];
   b.history.push({ action: '归还确认', by: req.session.user.displayName, at: b.returnedAt, note: '确认物品已归还，记录归档' });
@@ -481,21 +623,23 @@ app.post('/api/borrows/:id/cancel', requireStaff, (req, res) => {
     return res.status(400).json({ error: '该记录已归档' });
   }
   b.status = 'cancelled';
-  b.cancelReason = String((req.body || {}).reason || '').trim() || '未说明原因';
+  b.cancelReason = String((req.body || {}).reason || '').trim().slice(0, 200) || '未说明原因';
   b.archived = true;
+  b.updatedAt = nowISO();
   b.history = b.history || [];
   b.history.push({ action: '取消/驳回', by: req.session.user.displayName, at: nowISO(), note: b.cancelReason });
   store.saveBorrows(borrows);
   res.json({ ok: true, record: publicBorrow(b) });
 });
 
-/* 管理员：删除归档记录 */
+/* 管理员：删除归档记录（硬删除，控制台留痕） */
 app.delete('/api/borrows/:id', requireAdmin, (req, res) => {
   const borrows = store.loadBorrows();
   const idx = borrows.findIndex(x => x.id === req.params.id);
   if (idx < 0) return res.status(404).json({ error: '记录不存在' });
   const [removed] = borrows.splice(idx, 1);
   store.saveBorrows(borrows);
+  console.log(`[audit] ${nowISO()} 管理员 ${req.session.user.displayName} 删除归档记录 ${removed.no}（${removed.borrowerName}）`);
   res.json({ ok: true, removed: removed.id });
 });
 
@@ -538,8 +682,11 @@ app.get('/api/export', requireStaff, (req, res) => {
   else if (scope === 'archive') borrows = borrows.filter(b => b.archived || b.status === 'returned' || b.status === 'cancelled');
   borrows.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 
+  // CSV 公式注入防护：以 = + - @ 制表符开头的内容会被 Excel 当作公式执行，前置单引号使其按文本显示
+  const csvSafe = s => (/^[=+\-@\t\r]/.test(s) ? "'" + s : s);
   const esc = v => {
-    const s = v === null || v === undefined ? '' : String(v);
+    let s = v === null || v === undefined ? '' : String(v);
+    s = csvSafe(s);
     return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   };
   const fmt = v => (v ? new Date(v).toLocaleString('zh-CN', { hour12: false }) : '');
@@ -565,6 +712,25 @@ app.get('/api/export', requireStaff, (req, res) => {
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`);
   res.send(csv);
+});
+
+/* ================= 数据备份（管理员）：一键打包下载全部业务数据 ================= */
+app.get('/api/backup', requireAdmin, (req, res) => {
+  const payload = {
+    app: 'key-borrow-register-system',
+    exportedAt: nowISO(),
+    dataVersion: 1,
+    users: store.loadUsers(),
+    borrows: store.loadBorrows(),
+    inventory: store.loadInventory()
+  };
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  const fileName = `借用系统备份_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.json`;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`);
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(JSON.stringify(payload, null, 2));
 });
 
 /* ================= 物品库存管理（管理员/运行人员） ================= */
@@ -699,6 +865,21 @@ app.post('/api/users/:id/reset-password', requireAdmin, (req, res) => {
   u.passwordHash = hash;
   store.saveUsers(users);
   res.json({ ok: true });
+});
+
+/* ================= 兜底：API 404 返回 JSON、统一错误处理 ================= */
+app.use('/api', (req, res) => res.status(404).json({ error: '接口不存在' }));
+
+app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
+  if (err && (err.type === 'entity.parse.failed' || err instanceof SyntaxError)) {
+    return res.status(400).json({ error: '请求体格式错误' });
+  }
+  if (err && err.type === 'entity.too.large') {
+    return res.status(413).json({ error: '请求数据过大' });
+  }
+  console.error('[server] 未处理错误:', err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: '服务器内部错误' });
 });
 
 /* ================= 启动 ================= */

@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>借用记录状态查询</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔍</text></svg>">
   <link rel="stylesheet" href="/css/style.css">
   <style>
     body { background: #eef1f6; padding: 16px; }
@@ -166,7 +167,7 @@
       $('#errMsg').textContent = '';
       doQuery({ no, name });
     });
-    $('#qName, #qNo').addEventListener('keydown', e => { if (e.key === 'Enter') $('#btnQuery').click(); });
+    document.querySelectorAll('#qNo, #qName').forEach(el => el.addEventListener('keydown', e => { if (e.key === 'Enter') $('#btnQuery').click(); }));
   </script>
 </body>
 </html>
