@@ -255,11 +255,13 @@
             <button class="btn" style="justify-content:center;padding:18px;" onclick="exportCSV('active')">📄 导出当前借用中记录</button>
             <button class="btn" style="justify-content:center;padding:18px;" onclick="exportCSV('archive')">📄 导出归档记录</button>
             <button class="btn" id="btnBackup" style="justify-content:center;padding:18px;display:none;" onclick="location.href='/api/backup'">💾 备份全部数据（管理员）</button>
+            <button class="btn" id="btnRestore" style="justify-content:center;padding:18px;display:none;" onclick="restoreBackup()">📥 还原数据（管理员）</button>
           </div>
+          <input type="file" id="restoreFile" accept=".json,application/json" style="display:none;">
           <div class="qr-tip" style="margin-top:18px;">
             导出文件为 CSV 格式（UTF-8 带 BOM），使用 Excel / WPS 直接打开即可正常显示中文。
             导出的字段包含：借用单号、借用人、物品类型、物品名称、数量、借用时间、计划归还时间、实际归还时间、状态、确认人、确认时间、归还人、是否超期、备注、创建时间。<br>
-            <b>数据备份</b>（仅管理员）：下载包含账号、借用记录、库存的 JSON 备份文件，建议定期备份；恢复时用备份文件覆盖 <code>data/</code> 目录下的同名 JSON 文件后重启服务。
+            <b>数据备份与还原</b>（仅管理员）：点击「备份全部数据」可下载包含账号、借用记录、库存的 JSON 备份文件，建议定期备份；需要恢复时点击「还原数据」选择该备份文件即可一键恢复，还原前系统会自动把当前数据备份到 <code>data/restore-backup-时间戳/</code> 目录，操作安全可逆。
           </div>
         </div>
       </section>
@@ -425,6 +427,7 @@
         if (currentUser.role === 'admin') {
           $('#menuUsers').style.display = 'flex';
           $('#btnBackup').style.display = 'flex';
+          $('#btnRestore').style.display = 'flex';
         }
         if (d.mustChangePassword) $('#pwdBanner').style.display = 'flex';
         loadStats(); loadActive(); loadArchive();
@@ -874,6 +877,35 @@
     }
     $('#invFile').addEventListener('change', importInventory);
 
+    /* ============ 数据还原（管理员） ============ */
+    function restoreBackup() {
+      $('#restoreFile').click();
+    }
+    $('#restoreFile').addEventListener('change', async function () {
+      const f = this.files[0];
+      this.value = '';
+      if (!f) return;
+      if (!/\.json$/i.test(f.name)) return showToast('请选择 .json 备份文件', 'err');
+      let data;
+      try {
+        data = JSON.parse(await f.text());
+      } catch (e) {
+        return showToast('文件不是有效的 JSON 备份', 'err');
+      }
+      if (!Array.isArray(data.users) || !Array.isArray(data.borrows) || !Array.isArray(data.inventory)) {
+        return showToast('备份文件格式不正确：缺少 users/borrows/inventory 数据', 'err');
+      }
+      const summary = '用户 ' + data.users.length + ' 个、借用记录 ' + data.borrows.length + ' 条、库存 ' + data.inventory.length + ' 项';
+      if (!confirm('确认要从该备份还原数据？\n\n' + summary + '\n\n还原后当前全部数据将被备份文件的版本覆盖。\n（还原前系统会自动将当前数据备份到 data/restore-backup-时间戳/）\n此操作不可撤销，是否继续？')) return;
+      try {
+        const d = await api('/api/restore', { method: 'POST', body: JSON.stringify(data) });
+        showToast('还原成功：' + d.restored.users + ' 用户 / ' + d.restored.borrows + ' 记录 / ' + d.restored.inventory + ' 库存项', 'ok');
+        setTimeout(() => location.reload(), 800);
+      } catch (e) {
+        showToast(e.message, 'err');
+      }
+    });
+
     /* ============ 二维码 ============ */
     async function genQR() {
       try {
@@ -886,14 +918,38 @@
     function printQR() {
       const src = $('#qrImg').src;
       if (!src) return showToast('请先生成二维码', 'err');
-      const w = window.open('', '_blank');
+      const url = $('#qrUrl').textContent || '';
+      const now = new Date();
+      const p2 = n => String(n).padStart(2, '0');
+      const genTime = now.getFullYear() + '-' + p2(now.getMonth() + 1) + '-' + p2(now.getDate()) + ' ' + p2(now.getHours()) + ':' + p2(now.getMinutes());
+      const w = window.open('', '_blank', 'width=620,height=880');
       if (!w) return showToast('浏览器拦截了打印窗口，请允许弹出窗口', 'err');
       w.document.write('<!DOCTYPE html><html><head><meta charset="utf-8"><title>借用登记二维码</title>' +
-        '<style>body{font-family:"Microsoft YaHei",sans-serif;text-align:center;margin-top:40px;}h2{margin-bottom:8px;}p{color:#555;word-break:break-all;max-width:420px;margin:10px auto;font-size:13px;}</style>' +
-        '</head><body><h2>钥匙 / 工具 / 标识牌 借用登记</h2>' +
-        '<p>请用手机微信扫描二维码，登记借用与查询归还状态</p>' +
-        '<img src="' + src + '" style="width:360px;height:360px;" onload="setTimeout(function(){window.print()},200)">' +
-        '<p>' + esc($('#qrUrl').textContent || '') + '</p></body></html>');
+        '<style>' +
+        'body{margin:0;padding:0;font-family:"Microsoft YaHei","PingFang SC","Hiragino Sans GB",sans-serif;background:#eef1f6;-webkit-print-color-adjust:exact;print-color-adjust:exact;}' +
+        '.sheet{max-width:470px;margin:26px auto;background:#fff;border-radius:16px;box-shadow:0 6px 24px rgba(30,60,120,.14);padding:30px 32px;}' +
+        '.head{display:flex;align-items:center;gap:12px;border-bottom:3px solid #2b6ef2;padding-bottom:16px;}' +
+        '.logo{width:46px;height:46px;border-radius:12px;flex:0 0 auto;background:linear-gradient(135deg,#2b6ef2,#5b9bff);color:#fff;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:bold;}' +
+        '.head h1{margin:0;font-size:21px;color:#1c2b3a;letter-spacing:1px;}' +
+        '.head .sub{font-size:12px;color:#8b95a7;margin-top:3px;}' +
+        '.qr-box{text-align:center;margin:24px 0 12px;}' +
+        '.qr-box img{width:320px;height:320px;padding:14px;background:#fff;border:1px solid #e3e8f0;border-radius:14px;box-shadow:0 2px 10px rgba(0,0,0,.06);}' +
+        '.qr-hint{text-align:center;color:#66707f;font-size:14px;margin-bottom:18px;}' +
+        '.steps{background:#f4f8ff;border:1px solid #dfe9ff;border-radius:12px;padding:14px 18px;}' +
+        '.steps .t{color:#2b6ef2;font-weight:bold;font-size:14px;}' +
+        '.steps ol{margin:8px 0 0 20px;padding:0;color:#49566a;font-size:13px;line-height:2;}' +
+        '.foot{margin-top:20px;border-top:1px dashed #d9e0ea;padding-top:14px;text-align:center;color:#97a0b0;font-size:11px;word-break:break-all;line-height:1.8;}' +
+        '@media print{body{background:#fff}.sheet{margin:0 auto;box-shadow:none;border-radius:0}}' +
+        '</style></head><body>' +
+        '<div class="sheet">' +
+        '<div class="head"><div class="logo">钥</div><div><h1>钥匙 · 工具 · 标识牌 借用登记</h1><div class="sub">手机扫码登记借用 · 在线查询归还状态</div></div></div>' +
+        '<div class="qr-box"><img src="' + src + '"></div>' +
+        '<div class="qr-hint">请使用<strong>手机微信 / 手机浏览器</strong>扫描上方二维码</div>' +
+        '<div class="steps"><div class="t">使用说明</div><ol><li>扫码打开「借用登记」页面</li><li>填写姓名并完成手写签字</li><li>选择借用物品与借用时间后提交</li><li>归还时到值班台办理归还确认</li></ol></div>' +
+        '<div class="foot">访问地址：' + esc(url) + '<br>生成时间：' + genTime + '</div>' +
+        '</div>' +
+        '<script>window.onload=function(){setTimeout(function(){window.print()},400)}<\/script>' +
+        '</body></html>');
       w.document.close();
     }
 

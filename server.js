@@ -733,6 +733,66 @@ app.get('/api/backup', requireAdmin, (req, res) => {
   res.send(JSON.stringify(payload, null, 2));
 });
 
+/* ================= 数据还原（管理员）：从备份 JSON 恢复全部业务数据 =================
+ * 支持「数据导出」页备份按钮下载的 JSON 备份文件。
+ * 还原前会自动把当前数据备份到 data/restore-backup-<时间戳>/，防止误操作丢失现有数据。
+ */
+app.post('/api/restore', requireAdmin, (req, res) => {
+  const p = req.body || {};
+  if (p.app && p.app !== 'key-borrow-register-system') {
+    return res.status(400).json({ error: '该文件不是本系统导出的备份文件' });
+  }
+  if (!Array.isArray(p.users) || !Array.isArray(p.borrows) || !Array.isArray(p.inventory)) {
+    return res.status(400).json({ error: '备份文件格式不正确：缺少 users/borrows/inventory 数据' });
+  }
+  // 数据规模上限保护，防止异常超大文件
+  if (p.users.length > 10000 || p.borrows.length > 100000 || p.inventory.length > 50000) {
+    return res.status(400).json({ error: '备份数据量超出系统可接受范围' });
+  }
+  // 用户数据完整性校验
+  for (const u of p.users) {
+    if (!u || typeof u !== 'object' || !u.id || !u.username || !u.passwordSalt || !u.passwordHash) {
+      return res.status(400).json({ error: '备份中的用户数据不完整（缺少 id/用户名/密码字段）' });
+    }
+    if (!['admin', 'operator'].includes(u.role)) return res.status(400).json({ error: '备份中的用户角色无效' });
+    if (!['active', 'disabled'].includes(u.status)) u.status = 'active';
+  }
+  // 借用记录基本校验
+  for (const b of p.borrows) {
+    if (!b || typeof b !== 'object' || !b.id) return res.status(400).json({ error: '备份中的借用记录缺少 id' });
+    if (!['pending', 'confirmed', 'returned', 'cancelled'].includes(b.status)) b.status = 'pending';
+  }
+  // 库存数据基本校验
+  for (const it of p.inventory) {
+    if (!it || typeof it !== 'object' || !it.id || !it.itemType || !it.itemName) {
+      return res.status(400).json({ error: '备份中的库存数据不完整' });
+    }
+  }
+
+  // 还原前将当前数据备份一份，防止误操作丢失现有数据
+  let bakDir = null;
+  try {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    bakDir = path.join(store.DATA_DIR, 'restore-backup-' + ts);
+    fs.mkdirSync(bakDir, { recursive: true });
+    fs.writeFileSync(path.join(bakDir, 'users.json'), JSON.stringify(store.loadUsers(), null, 2), 'utf8');
+    fs.writeFileSync(path.join(bakDir, 'borrows.json'), JSON.stringify(store.loadBorrows(), null, 2), 'utf8');
+    fs.writeFileSync(path.join(bakDir, 'inventory.json'), JSON.stringify(store.loadInventory(), null, 2), 'utf8');
+  } catch (e) {
+    console.error('[restore] 还原前备份当前数据失败:', e.message);
+  }
+
+  store.saveUsers(p.users);
+  store.saveBorrows(p.borrows);
+  store.saveInventory(p.inventory);
+  console.log(`[audit] ${nowISO()} 管理员 ${req.session.user.displayName} 完成数据还原：用户 ${p.users.length}、借用记录 ${p.borrows.length}、库存 ${p.inventory.length}${bakDir ? '（还原前备份：' + bakDir + '）' : ''}`);
+  res.json({
+    ok: true,
+    restored: { users: p.users.length, borrows: p.borrows.length, inventory: p.inventory.length },
+    message: '数据还原成功，请重新登录后查看'
+  });
+});
+
 /* ================= 物品库存管理（管理员/运行人员） ================= */
 app.get('/api/inventory', requireStaff, (req, res) => {
   const type = String(req.query.type || '').trim();
