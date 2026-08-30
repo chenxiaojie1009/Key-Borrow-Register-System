@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>登录 - 钥匙/工具/标识牌 借用登记系统</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    body { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+    .login-wrap { width: 100%; max-width: 400px; padding: 20px; }
+    .login-card { background: #fff; border: 1px solid var(--border); border-radius: 14px; padding: 32px 30px; box-shadow: 0 8px 30px rgba(16,24,40,.1); }
+    .brand { text-align: center; margin-bottom: 24px; }
+    .brand .logo { font-size: 34px; }
+    .brand h1 { font-size: 18px; margin-top: 8px; }
+    .brand p { color: var(--text-2); font-size: 13px; margin-top: 4px; }
+    .btn { width: 100%; justify-content: center; padding: 11px; font-size: 15px; margin-top: 6px; }
+    .err-msg { color: var(--danger); font-size: 13px; margin-top: 10px; min-height: 18px; text-align: center; }
+    .tip { text-align: center; color: var(--text-2); font-size: 12px; margin-top: 18px; line-height: 1.8; }
+  </style>
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-card">
+      <div class="brand">
+        <div class="logo">🔐</div>
+        <h1>借用登记与归还确认系统</h1>
+        <p>钥匙 · 工具 · 标识牌</p>
+      </div>
+      <form id="loginForm">
+        <div class="field">
+          <label>用户名</label>
+          <input type="text" id="username" placeholder="请输入用户名" autocomplete="username" required>
+        </div>
+        <div class="field">
+          <label>密码</label>
+          <input type="password" id="password" placeholder="请输入密码" autocomplete="current-password" required>
+        </div>
+        <button type="submit" class="btn primary" id="btnLogin">登 录</button>
+        <div class="err-msg" id="errMsg"></div>
+      </form>
+      <div class="tip">
+        借用人无需登录，请扫描管理后台生成的二维码进行登记。
+      </div>
+    </div>
+  </div>
+  <script>
+    const form = document.getElementById('loginForm');
+    const errMsg = document.getElementById('errMsg');
+    const btn = document.getElementById('btnLogin');
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errMsg.textContent = '';
+      btn.disabled = true; btn.textContent = '登录中...';
+      try {
+        const res = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: username.value.trim(), password: password.value })
+        });
+        const data = await res.json();
+        if (!res.ok) { errMsg.textContent = data.error || '登录失败'; btn.disabled = false; btn.textContent = '登 录'; return; }
+        location.href = '/';
+      } catch (err) {
+        errMsg.textContent = '网络错误，请重试';
+        btn.disabled = false; btn.textContent = '登 录';
+      }
+    });
+  </script>
+</body>
+</html>

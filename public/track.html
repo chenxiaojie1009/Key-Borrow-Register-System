@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>借用记录状态查询</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    body { background: #eef1f6; padding: 16px; }
+    .page { max-width: 520px; margin: 0 auto; }
+    .top { text-align: center; padding: 16px 10px 14px; }
+    .top .icon { font-size: 38px; }
+    .top h1 { font-size: 19px; margin-top: 6px; }
+    .top p { color: var(--text-2); font-size: 13px; margin-top: 4px; }
+    .card { background: #fff; border-radius: 14px; padding: 20px; box-shadow: var(--shadow); margin-bottom: 14px; }
+    .btn { width: 100%; justify-content: center; padding: 12px; font-size: 15px; }
+    .err-msg { color: var(--danger); font-size: 13px; margin-top: 10px; text-align: center; }
+
+    /* 结果卡片 */
+    .res-no { font-size: 17px; font-weight: 700; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+    .res-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; margin-top: 14px; }
+    .res-grid .item .k { font-size: 12px; color: var(--text-2); }
+    .res-grid .item .v { font-size: 14px; font-weight: 600; }
+    .res-grid .full { grid-column: 1 / -1; }
+    @media (max-width: 400px) { .res-grid { grid-template-columns: 1fr; } }
+
+    /* 归还确认主状态条 */
+    .return-strip { border-radius: 12px; padding: 14px 16px; margin-top: 14px; font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+    .return-strip.ok { background: var(--ok-bg); color: var(--ok); }
+    .return-strip.pending { background: var(--pending-bg); color: #9a6a00; }
+    .return-strip.overdue { background: var(--danger-bg); color: var(--danger); }
+    .return-strip .sub { font-weight: 400; font-size: 13px; margin-left: auto; }
+
+    .overdue-warn { margin-top: 12px; background: var(--danger-bg); border: 1px solid #f1aeb0; color: #b71c1c; border-radius: 10px; padding: 12px 14px; font-size: 14px; line-height: 1.7; }
+    .tip { background: #f0f7ff; border-radius: 10px; padding: 14px 16px; font-size: 13px; color: #14548f; line-height: 1.9; margin-top: 14px; }
+    .loading { text-align: center; color: var(--text-2); padding: 30px; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="top">
+      <div class="icon">🔍</div>
+      <h1>借用记录状态查询</h1>
+      <p>核实您的借用是否已被「归还确认」</p>
+    </div>
+
+    <!-- 查询表单（无 token 时） -->
+    <div class="card" id="queryForm">
+      <div class="field">
+        <label>借用单号<span class="req">*</span></label>
+        <input type="text" id="qNo" placeholder="如：BR-20260829-003">
+      </div>
+      <div class="field">
+        <label>借用人姓名<span class="req">*</span></label>
+        <input type="text" id="qName" placeholder="登记时填写的姓名">
+      </div>
+      <button type="button" class="btn primary" id="btnQuery">查 询</button>
+      <div class="err-msg" id="errMsg"></div>
+      <div class="tip">忘记单号？请回到登记成功页面，扫描保存的「专属查询二维码」即可直接查询。</div>
+    </div>
+
+    <!-- 查询结果 -->
+    <div class="card" id="resultCard" style="display:none;">
+      <div class="res-no"><span id="rNo"></span><span id="rStatus"></span></div>
+
+      <!-- 归还确认主状态条 -->
+      <div class="return-strip" id="rReturnStrip"></div>
+      <div class="overdue-warn" id="rOverdueWarn" style="display:none;"></div>
+
+      <div class="res-grid" id="rGrid"></div>
+    </div>
+
+    <div class="loading" id="loading" style="display:none;">查询中...</div>
+  </div>
+
+  <script>
+    const $ = s => document.querySelector(s);
+    const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const fmt = v => v ? new Date(v).toLocaleString('zh-CN', { hour12: false }) : '';
+    const statusMap = {
+      pending:   ['待确认', 'badge pending'],
+      confirmed: ['已确认（借用中）', 'badge confirmed'],
+      returned:  ['已归还', 'badge returned'],
+      cancelled: ['已取消', 'badge cancelled']
+    };
+
+    async function doQuery(params) {
+      $('#queryForm').style.display = 'none';
+      $('#loading').style.display = 'block';
+      $('#resultCard').style.display = 'none';
+      try {
+        const qs = new URLSearchParams(params).toString();
+        const res = await fetch('/api/track/status?' + qs);
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          $('#queryForm').style.display = 'block';
+          $('#loading').style.display = 'none';
+          $('#errMsg').textContent = d.error || '查询失败';
+          return;
+        }
+        render(d.record);
+        $('#loading').style.display = 'none';
+        $('#resultCard').style.display = 'block';
+      } catch (e) {
+        $('#queryForm').style.display = 'block';
+        $('#loading').style.display = 'none';
+        $('#errMsg').textContent = '网络错误，请重试';
+      }
+    }
+
+    function render(b) {
+      const st = statusMap[b.status] || [b.status, 'badge'];
+      $('#rNo').textContent = b.no;
+      $('#rStatus').innerHTML = '<span class="' + st[1] + '">' + st[0] + '</span>' +
+        (b.overdue ? ' <span class="badge overdue">⏰ 已超期</span>' : '');
+
+      // 归还确认主状态条（借用人最关心的）
+      const strip = $('#rReturnStrip');
+      if (b.status === 'returned') {
+        strip.className = 'return-strip ok';
+        strip.innerHTML = '✅ 已归还确认<span class="sub">' + esc(b.returnedBy) + ' · ' + fmt(b.returnedAt) + '</span>';
+      } else if (b.status === 'cancelled') {
+        strip.className = 'return-strip pending';
+        strip.innerHTML = '⛔ 该笔借用已取消<span class="sub"></span>';
+      } else {
+        strip.className = b.overdue ? 'return-strip overdue' : 'return-strip pending';
+        strip.innerHTML = (b.status === 'confirmed' ? '⏳ 已确认借用，尚未归还' : '⏳ 待运行人员确认借用') +
+          '<span class="sub"></span>';
+      }
+
+      // 超期红色警告
+      const warn = $('#rOverdueWarn');
+      if (b.overdue && (b.status === 'pending' || b.status === 'confirmed')) {
+        warn.style.display = 'block';
+        warn.innerHTML = '🚨 <b>已超过计划归还时间（' + fmt(b.plannedReturnTime) + '）仍未归还！</b><br>系统已提醒运行人员与管理员，请尽快联系归还。';
+      } else {
+        warn.style.display = 'none';
+      }
+
+      // 明细
+      const arr = (b.items && b.items.length) ? b.items : [{ itemType: b.itemType, itemName: b.itemName, quantity: b.quantity }];
+      const itemsHtml = arr.map(it => '&nbsp;&nbsp;· ' + esc(it.itemType) + ' - ' + esc(it.itemName) + ' × ' + it.quantity + '<br>').join('') || '—';
+      let html =
+        '<div class="item"><div class="k">借用人</div><div class="v">' + esc(b.borrowerName) + '</div></div>' +
+        '<div class="item full"><div class="k">物品清单</div><div class="v">' + itemsHtml + '</div></div>' +
+        '<div class="item"><div class="k">借用时间</div><div class="v">' + fmt(b.borrowTime) + '</div></div>' +
+        '<div class="item"><div class="k">计划归还时间</div><div class="v">' + fmt(b.plannedReturnTime) + '</div></div>' +
+        '<div class="item"><div class="k">确认借用（运行人员）</div><div class="v">' + (b.confirmedBy ? esc(b.confirmedBy) + ' · ' + fmt(b.confirmedAt) : '尚未确认') + '</div></div>' +
+        '<div class="item"><div class="k">归还确认</div><div class="v">' + (b.returnedBy ? esc(b.returnedBy) + ' · ' + fmt(b.returnedAt) : '尚未归还') + '</div></div>' +
+        (b.cancelReason ? '<div class="item full"><div class="k">取消原因</div><div class="v">' + esc(b.cancelReason) + '</div></div>' : '') +
+        (b.operatorNote ? '<div class="item full"><div class="k">运行人员备注</div><div class="v">' + esc(b.operatorNote) + '</div></div>' : '');
+      $('#rGrid').innerHTML = html;
+    }
+
+    // URL 带 token → 直接查询（扫码进入）
+    const urlToken = new URLSearchParams(location.search).get('token');
+    if (urlToken) {
+      doQuery({ token: urlToken });
+    }
+
+    $('#btnQuery').addEventListener('click', () => {
+      const no = $('#qNo').value.trim();
+      const name = $('#qName').value.trim();
+      if (!no) return ($('#errMsg').textContent = '请输入借用单号');
+      if (!name) return ($('#errMsg').textContent = '请输入借用人姓名');
+      $('#errMsg').textContent = '';
+      doQuery({ no, name });
+    });
+    $('#qName, #qNo').addEventListener('keydown', e => { if (e.key === 'Enter') $('#btnQuery').click(); });
+  </script>
+</body>
+</html>

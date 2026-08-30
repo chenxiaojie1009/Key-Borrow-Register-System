@@ -1,0 +1,863 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>借用登记系统 - 工作台</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    body { display: flex; min-height: 100vh; }
+    /* 侧边栏 */
+    .sidebar {
+      width: 210px; background: #1d2530; color: #cbd5e1; flex-shrink: 0;
+      display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh; overflow-y: auto;
+    }
+    .sidebar .brand { padding: 20px 18px; color: #fff; border-bottom: 1px solid rgba(255,255,255,.08); }
+    .sidebar .brand .t { font-weight: 700; font-size: 16px; }
+    .sidebar .brand .s { font-size: 12px; opacity: .7; margin-top: 2px; }
+    .menu { padding: 10px; flex: 1; }
+    .menu a {
+      display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px;
+      color: #cbd5e1; cursor: pointer; font-size: 14px; margin-bottom: 2px; text-decoration: none;
+    }
+    .menu a:hover { background: rgba(255,255,255,.06); color: #fff; }
+    .menu a.active { background: var(--primary); color: #fff; }
+    .menu a .count { margin-left: auto; background: rgba(255,255,255,.15); border-radius: 20px; font-size: 12px; padding: 0 8px; }
+    .menu a.active .count { background: rgba(255,255,255,.25); }
+    .menu a .count.overdue { background: var(--danger); }
+    .sidebar .logout { padding: 14px 18px; border-top: 1px solid rgba(255,255,255,.08); }
+    .sidebar .logout a { color: #f1aeb0; display: flex; align-items: center; gap: 8px; cursor: pointer; }
+
+    /* 主区域 */
+    .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+    .topbar {
+      background: #fff; border-bottom: 1px solid var(--border); padding: 12px 22px;
+      display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 50;
+    }
+    .topbar .user { display: flex; align-items: center; gap: 10px; }
+    .topbar .avatar { width: 34px; height: 34px; border-radius: 50%; background: var(--primary); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; }
+    .content { padding: 20px 22px; flex: 1; }
+    .page-title { font-size: 18px; font-weight: 700; margin-bottom: 16px; }
+    .section { display: none; }
+    .section.active { display: block; }
+
+    /* 二维码 */
+    .qr-wrap { text-align: center; padding: 24px; }
+    .qr-wrap img { width: 280px; height: 280px; border: 1px solid var(--border); border-radius: 12px; background: #fff; padding: 10px; }
+    .qr-url { background: #f5f7fa; border-radius: 8px; padding: 10px 14px; word-break: break-all; font-size: 13px; margin: 14px 0; color: var(--text-2); }
+    .qr-tip { color: var(--text-2); font-size: 13px; line-height: 1.9; margin-top: 14px; text-align: left; background: #f0f7ff; border-radius: 10px; padding: 14px 16px; }
+    .qr-tip b { color: var(--primary); }
+
+    /* 确认标志 */
+    .confirm-mark { display: inline-flex; align-items: center; gap: 4px; background: #e7f3ff; color: #1559a5; border-radius: 6px; padding: 3px 8px; font-size: 12px; font-weight: 600; }
+    .confirm-mark::before { content: "✔"; }
+    .red-text { color: var(--danger); font-weight: 700; }
+
+    /* 移动端 */
+    @media (max-width: 820px) {
+      .sidebar { width: 62px; }
+      .sidebar .brand .s, .sidebar .brand .t { display: none; }
+      .menu a span.lbl { display: none; }
+      .menu a .count { display: none; }
+      .content { padding: 14px; }
+      .detail-grid { grid-template-columns: 1fr; }
+      .table-scroll { overflow-x: auto; }
+    }
+    .table-scroll { overflow-x: auto; }
+    table { min-width: 900px; }
+    /* 多物品行（登记/编辑） */
+    .item-row { display: grid; grid-template-columns: 1fr 1.6fr 0.7fr auto; gap: 8px; margin-bottom: 8px; align-items: center; }
+    .item-row .it-del { white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="t">🔐 借用登记系统</div>
+      <div class="s">钥匙 · 工具 · 标识牌</div>
+    </div>
+    <nav class="menu">
+      <a data-sec="overview" class="active"><span>📊</span><span class="lbl">总览</span></a>
+      <a data-sec="active"><span>📋</span><span class="lbl">借用目录</span><span class="count" id="menuActive"></span></a>
+      <a data-sec="inv"><span>📦</span><span class="lbl">物品管理</span></a>
+      <a data-sec="archive"><span>🗂️</span><span class="lbl">历史归档</span><span class="count" id="menuArchive"></span></a>
+      <a data-sec="qr"><span>📱</span><span class="lbl">借用二维码</span></a>
+      <a data-sec="export"><span>📤</span><span class="lbl">数据导出</span></a>
+      <a data-sec="users" id="menuUsers" style="display:none"><span>👥</span><span class="lbl">用户管理</span></a>
+    </nav>
+    <div class="logout">
+      <a id="btnLogout">🚪 退出登录</a>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="topbar">
+      <div><b>借用登记与归还确认系统</b></div>
+      <div class="user">
+        <span id="userRole" style="font-size:12px;color:var(--text-2);"></span>
+        <div class="avatar" id="userAvatar"></div>
+        <span id="userName"></span>
+      </div>
+    </div>
+
+    <div class="content">
+      <!-- 全局超期提醒横幅 -->
+      <div class="overdue-banner" id="overdueBanner">
+        <span class="bell">🚨</span>
+        <div>
+          <div id="overdueBannerTitle"></div>
+          <div class="detail" id="overdueBannerDetail"></div>
+        </div>
+        <button class="close" onclick="document.getElementById('overdueBanner').classList.remove('show')">✕</button>
+      </div>
+
+      <!-- ============ 总览 ============ -->
+      <section class="section active" id="sec-overview">
+        <div class="page-title">总览</div>
+        <div class="stats-grid">
+          <div class="stat-card pending"><div class="num" id="stPending">0</div><div class="lbl">待确认申请</div></div>
+          <div class="stat-card active"><div class="num" id="stActive">0</div><div class="lbl">借用中（已确认）</div></div>
+          <div class="stat-card overdue"><div class="num" id="stOverdue">0</div><div class="lbl">已超期未归还</div></div>
+          <div class="stat-card archived"><div class="num" id="stArchived">0</div><div class="lbl">已归档记录</div></div>
+        </div>
+        <div class="card">
+          <div class="page-title" style="padding:16px 18px 0;">⚠ 超期未归还提醒</div>
+          <div id="overdueList"><div class="empty">暂无超期记录</div></div>
+        </div>
+      </section>
+
+      <!-- ============ 借用目录 ============ -->
+      <section class="section" id="sec-active">
+        <div class="page-title">借用目录 <span style="font-size:13px;color:var(--text-2);font-weight:400;">（未归还记录，红色为超期）</span></div>
+        <div class="toolbar">
+          <input type="text" id="activeSearch" placeholder="搜索借用人/物品/单号...">
+          <select id="activeFilter" style="width:auto;">
+            <option value="all">全部状态</option>
+            <option value="pending">待确认</option>
+            <option value="confirmed">已确认（借用中）</option>
+            <option value="overdue">仅看超期</option>
+          </select>
+          <button class="btn" onclick="loadActive()">🔄 刷新</button>
+        </div>
+        <div class="card table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>借用单号</th><th>借用人</th><th>物品</th><th>数量</th>
+                <th>借用时间</th><th>计划归还</th><th>确认标志</th><th>状态</th><th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="activeBody"></tbody>
+          </table>
+          <div class="empty" id="activeEmpty" style="display:none;">暂无借用记录</div>
+        </div>
+      </section>
+
+      <!-- ============ 物品管理（库存） ============ -->
+      <section class="section" id="sec-inv">
+        <div class="page-title">物品管理（库存） <span style="font-size:13px;color:var(--text-2);font-weight:400;">—— 借用人借用时，可用数量为 0 的物品将不可选择</span></div>
+        <div class="toolbar">
+          <button class="btn primary" onclick="openInvAdd()">➕ 新增物品</button>
+          <button class="btn" onclick="downloadTemplate()">⬇ 下载导入模板</button>
+          <button class="btn" onclick="document.getElementById('invFile').click()">📥 导入库存 CSV</button>
+          <input type="file" id="invFile" accept=".csv,text/csv" style="display:none;">
+          <button class="btn" onclick="loadInventory()">🔄 刷新</button>
+        </div>
+        <div class="card">
+          <div class="inv-sum" id="invSummary"></div>
+          <div class="table-scroll">
+            <table style="min-width:640px;">
+              <thead>
+                <tr>
+                  <th>物品类型</th><th>物品名称</th><th>库存总数</th><th>当前已借</th><th>可用数量</th><th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="invBody"></tbody>
+            </table>
+          </div>
+          <div class="empty" id="invEmpty" style="display:none;">尚未导入任何库存物品。请先「下载导入模板」填写后「导入库存 CSV」。</div>
+        </div>
+        <div class="qr-tip" style="margin-top:12px;">
+          <b>导入说明：</b>① 点击「下载导入模板」，用 Excel / WPS 打开，按模板填写物品类型（钥匙/工具/标识牌或其他）、物品名称、数量（库存总数）；<br>
+          ② 保存时请选择 <u>CSV UTF-8</u> 编码（WPS/Excel 另存为时选 CSV UTF-8，否则中文可能乱码）；<br>
+          ③ 点击「导入库存 CSV」选择文件，同名同类型的物品将<b>覆盖数量</b>，新名称自动新增；<br>
+          ④ 借用人登记时，被借出后未归还的物品会从可用候选中消失，可用数量不足时无法借用。
+        </div>
+      </section>
+
+      <!-- ============ 历史归档 ============ -->
+      <section class="section" id="sec-archive">
+        <div class="page-title">历史归档（已归还/已取消，不再显示在借用目录）</div>
+        <div class="toolbar">
+          <input type="text" id="archiveSearch" placeholder="搜索借用人/物品/单号...">
+          <button class="btn" onclick="loadArchive()">🔄 刷新</button>
+          <button class="btn primary sm" onclick="exportCSV('archive')">导出归档记录</button>
+        </div>
+        <div class="card table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>借用单号</th><th>借用人</th><th>物品</th><th>数量</th>
+                <th>借用时间</th><th>实际归还/取消时间</th><th>状态</th><th>确认人</th><th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="archiveBody"></tbody>
+          </table>
+          <div class="empty" id="archiveEmpty" style="display:none;">暂无归档记录</div>
+        </div>
+      </section>
+
+      <!-- ============ 二维码 ============ -->
+      <section class="section" id="sec-qr">
+        <div class="page-title">借用登记二维码</div>
+        <div class="card qr-wrap">
+          <div style="font-size:14px;margin-bottom:6px;">借用人使用手机微信扫码，即可打开借用登记页面</div>
+          <img id="qrImg" alt="二维码">
+          <div class="qr-url" id="qrUrl"></div>
+          <div class="toolbar" style="justify-content:center;">
+            <input type="text" id="qrBase" placeholder="访问地址（默认自动检测本机局域网 IP）" style="max-width:420px;">
+            <button class="btn primary" onclick="genQR()">生成 / 刷新二维码</button>
+          </div>
+          <div class="qr-tip">
+            <b>使用说明：</b><br>
+            ① 将本页面展示的二维码打印 / 保存，贴在值班台或借用处；<br>
+            ② 借用人使用<u>手机微信</u>扫码（或手机浏览器扫码）→ 打开「借用登记」页面 → 填写信息并<b>手写签字</b> → 提交；<br>
+            ③ 提交后，运行人员在「借用目录 → 待确认」中审核、可修改信息并点「确认借用」；<br>
+            ④ 归还时在「借用中」列表点「归还确认」，记录自动归档。<br><br>
+            <b>手机访问前提：</b>手机需与本机在同一局域网（同一 WiFi/网段），且本机防火墙已放行端口 10800（见 README 中的放行命令）。
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 数据导出 ============ -->
+      <section class="section" id="sec-export">
+        <div class="page-title">数据导出（CSV，可用 Excel 打开）</div>
+        <div class="card" style="padding:20px;">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;">
+            <button class="btn primary" style="justify-content:center;padding:18px;" onclick="exportCSV('all')">📄 导出全部借用记录</button>
+            <button class="btn" style="justify-content:center;padding:18px;" onclick="exportCSV('active')">📄 导出当前借用中记录</button>
+            <button class="btn" style="justify-content:center;padding:18px;" onclick="exportCSV('archive')">📄 导出归档记录</button>
+          </div>
+          <div class="qr-tip" style="margin-top:18px;">
+            导出文件为 CSV 格式（UTF-8 带 BOM），使用 Excel / WPS 直接打开即可正常显示中文。
+            导出的字段包含：借用单号、借用人、物品类型、物品名称、数量、借用时间、计划归还时间、实际归还时间、状态、确认人、确认时间、归还人、是否超期、备注、创建时间。
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 用户管理（管理员） ============ -->
+      <section class="section" id="sec-users">
+        <div class="page-title">用户管理（管理员）</div>
+        <div class="toolbar">
+          <button class="btn primary" onclick="openUserModal()">➕ 新增用户</button>
+        </div>
+        <div class="card table-scroll">
+          <table style="min-width:700px;">
+            <thead>
+              <tr><th>用户名</th><th>显示名称</th><th>角色</th><th>状态</th><th>最近登录</th><th>操作</th></tr>
+            </thead>
+            <tbody id="userBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ============ 详情弹窗 ============ -->
+  <div class="modal-mask" id="detailModal">
+    <div class="modal">
+      <div class="modal-head"><h3>借用记录详情</h3><button class="close-x" onclick="closeModal('detailModal')">✕</button></div>
+      <div class="modal-body" id="detailBody"></div>
+    </div>
+  </div>
+
+  <!-- ============ 编辑弹窗 ============ -->
+  <div class="modal-mask" id="editModal">
+    <div class="modal">
+      <div class="modal-head"><h3>修改借用信息（运行人员）</h3><button class="close-x" onclick="closeModal('editModal')">✕</button></div>
+      <div class="modal-body">
+        <div class="field"><label>借用人姓名</label><input type="text" id="editBorrowerName"></div>
+        <div class="field"><label>物品清单</label><div id="editItemsWrap"></div><button type="button" class="btn sm" id="editAddItem" style="width:auto;">＋ 添加物品</button></div>
+        <div class="double-field" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+          <div class="field"><label>备注</label><input type="text" id="editNote"></div>
+        </div>
+        <div class="double-field" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+          <div class="field"><label>借用时间</label><input type="datetime-local" id="editBorrowTime"></div>
+          <div class="field"><label>计划归还时间</label><input type="datetime-local" id="editReturnTime"></div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" onclick="closeModal('editModal')">取消</button>
+        <button class="btn primary" onclick="saveEdit()">保存修改</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 取消原因弹窗 ============ -->
+  <div class="modal-mask" id="cancelModal">
+    <div class="modal" style="max-width:480px;">
+      <div class="modal-head"><h3>取消 / 驳回借用</h3><button class="close-x" onclick="closeModal('cancelModal')">✕</button></div>
+      <div class="modal-body">
+        <div class="field"><label>取消原因</label><textarea id="cancelReason" placeholder="请填写取消/驳回原因"></textarea></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" onclick="closeModal('cancelModal')">取消</button>
+        <button class="btn danger" onclick="doCancel()">确认取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 用户弹窗 ============ -->
+  <div class="modal-mask" id="userModal">
+    <div class="modal" style="max-width:480px;">
+      <div class="modal-head"><h3 id="userModalTitle">新增用户</h3><button class="close-x" onclick="closeModal('userModal')">✕</button></div>
+      <div class="modal-body">
+        <div class="field"><label>用户名<span class="req">*</span></label><input type="text" id="uUsername" placeholder="2-20 位字母/数字/下划线"></div>
+        <div class="field"><label>显示名称<span class="req">*</span></label><input type="text" id="uDisplayName" placeholder="如：运行人员3"></div>
+        <div class="field"><label>角色</label><select id="uRole"><option value="operator">运行人员</option><option value="admin">管理员</option></select></div>
+        <div class="field" id="uPwdField"><label>初始密码<span class="req">*</span></label><input type="password" id="uPassword" placeholder="至少 6 位"></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" onclick="closeModal('userModal')">取消</button>
+        <button class="btn primary" onclick="saveUser()">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 物品新增/编辑弹窗 ============ -->
+  <div class="modal-mask" id="invModal">
+    <div class="modal" style="max-width:460px;">
+      <div class="modal-head"><h3 id="invModalTitle">新增物品</h3><button class="close-x" onclick="closeInvModal()">✕</button></div>
+      <div class="modal-body">
+        <div class="field"><label>物品类型<span class="req">*</span></label>
+          <select id="invType" onchange="document.getElementById('invTypeCustom').style.display=this.value==='其他'?'block':'none'">
+            <option value="钥匙">钥匙</option><option value="工具">工具</option><option value="标识牌">标识牌</option><option value="其他">其他</option>
+          </select>
+          <input type="text" id="invTypeCustom" placeholder="自定义类型" style="display:none;margin-top:6px;">
+        </div>
+        <div class="field"><label>物品名称<span class="req">*</span></label><input type="text" id="invName" placeholder="如：机房大门钥匙" maxlength="50"></div>
+        <div class="field"><label>库存数量<span class="req">*</span></label><input type="number" id="invQty" value="1" min="1" max="9999" step="1"></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" onclick="closeInvModal()">取消</button>
+        <button class="btn primary" onclick="saveInv()">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script>
+    /* ============ 通用 ============ */
+    const $ = s => document.querySelector(s);
+    const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const fmt = v => v ? new Date(v).toLocaleString('zh-CN', { hour12: false }) : '';
+    const statusMap = { pending: ['待确认', 'badge pending'], confirmed: ['已确认', 'badge confirmed'], returned: ['已归还', 'badge returned'], cancelled: ['已取消', 'badge cancelled'] };
+    let currentUser = null;
+    // 多物品显示：返回物品列表 HTML（含类型·名称×数量）
+    function itemsHtml(b, { inline = false } = {}) {
+      const arr = (b.items && b.items.length) ? b.items : [{ itemType: b.itemType, itemName: b.itemName, quantity: b.quantity }];
+      const lines = arr.map(it => (inline ? esc(it.itemType) + '·' + esc(it.itemName) + '×' + it.quantity : '&nbsp;· ' + esc(it.itemType) + ' - ' + esc(it.itemName) + ' × ' + it.quantity + '<br>'));
+      return lines.join(inline ? '；' : '');
+    }
+    function itemsCount(b) {
+      const arr = (b.items && b.items.length) ? b.items : [b];
+      return arr.reduce((s, it) => s + (Number(it.quantity) || 1), 0);
+    }
+
+    function showToast(msg, type) {
+      const el = document.createElement('div');
+      el.className = 'toast-item ' + (type || '');
+      el.textContent = msg;
+      $('#toast').appendChild(el);
+      setTimeout(() => el.remove(), 2600);
+    }
+    function openModal(id) { $('#' + id).classList.add('show'); }
+    function closeModal(id) { $('#' + id).classList.remove('show'); }
+    function api(url, opts) {
+      return fetch(url, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts || {}))
+        .then(async res => { const d = await res.json().catch(() => ({})); if (!res.ok) throw new Error(d.error || '请求失败'); return d; });
+    }
+
+    /* ============ 登录态 ============ */
+    async function init() {
+      try {
+        const d = await api('/api/me');
+        currentUser = d.user;
+        $('#userName').textContent = currentUser.displayName + '（' + (currentUser.role === 'admin' ? '管理员' : '运行人员') + '）';
+        $('#userAvatar').textContent = currentUser.displayName.slice(0, 1);
+        $('#userRole').textContent = currentUser.role === 'admin' ? '管理员' : '运行人员';
+        if (currentUser.role === 'admin') $('#menuUsers').style.display = 'flex';
+        loadStats(); loadActive(); loadArchive();
+        if (currentUser.role === 'admin') loadUsers();
+        loadInventory();
+        genQR();
+        setInterval(() => { loadStats(); }, 30000);
+      } catch (e) {
+        location.href = '/login.html';
+      }
+    }
+    $('#btnLogout').addEventListener('click', async () => {
+      await api('/api/logout', { method: 'POST' }).catch(() => {});
+      location.href = '/login.html';
+    });
+
+    /* ============ 菜单切换 ============ */
+    document.querySelectorAll('.menu a').forEach(a => {
+      a.addEventListener('click', () => {
+        document.querySelectorAll('.menu a').forEach(x => x.classList.remove('active'));
+        a.classList.add('active');
+        document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+        $('#sec-' + a.dataset.sec).classList.add('active');
+        if (a.dataset.sec === 'archive') loadArchive();
+        if (a.dataset.sec === 'users') loadUsers();
+        if (a.dataset.sec === 'qr') genQR();
+        if (a.dataset.sec === 'active') loadActive();
+        if (a.dataset.sec === 'inv') loadInventory();
+      });
+    });
+
+    /* ============ 统计 + 超期横幅 ============ */
+    let lastOverdueIds = [];
+    async function loadStats() {
+      try {
+        const d = await api('/api/stats');
+        $('#stPending').textContent = d.pending;
+        $('#stActive').textContent = d.confirmed;
+        $('#stOverdue').textContent = d.overdue;
+        $('#stArchived').textContent = d.archived;
+        $('#menuActive').textContent = d.active;
+        $('#menuArchive').textContent = d.archived;
+        // 渲染总览页超期列表
+        const ol = $('#overdueList');
+        if (d.overdueList && d.overdueList.length) {
+          ol.innerHTML = '<table style="min-width:0;"><thead><tr><th>借用单号</th><th>借用人</th><th>物品</th><th>数量</th><th>计划归还</th><th>操作</th></tr></thead><tbody>' +
+            d.overdueList.map(b => '<tr class="row-overdue"><td>' + esc(b.no) + '</td><td><b>' + esc(b.borrowerName) + '</b></td><td>' + itemsHtml(b, { inline: true }) + '</td><td>' + itemsCount(b) + '</td><td><span class="red-text">' + fmt(b.plannedReturnTime) + '</span></td><td><button class="btn sm" onclick="showDetail(\'' + b.id + '\')">详情</button></td></tr>').join('') +
+            '</tbody></table>';
+        } else {
+          ol.innerHTML = '<div class="empty">暂无超期记录</div>';
+        }
+        if (d.overdue > 0) {
+          $('#menuActive').classList.add('overdue');
+          $('#overdueBannerTitle').textContent = '🚨 有 ' + d.overdue + ' 笔借用已超期未归还！请尽快处理';
+          const names = d.overdueList.map(b => b.no + '（' + b.borrowerName + '·' + itemsHtml(b, { inline: true }) + '，应还 ' + fmt(b.plannedReturnTime) + '）').join('；');
+          $('#overdueBannerDetail').textContent = names.slice(0, 200);
+          $('#overdueBanner').classList.add('show');
+          // 浏览器通知
+          const ids = d.overdueList.map(b => b.id).sort();
+          if (lastOverdueIds.length > 0 && JSON.stringify(ids) !== JSON.stringify(lastOverdueIds)) {
+            tryNotify('借用超期提醒', '有 ' + d.overdue + ' 笔借用已超期未归还：' + names.slice(0, 100));
+          }
+          lastOverdueIds = ids;
+        } else {
+          $('#menuActive').classList.remove('overdue');
+          $('#overdueBanner').classList.remove('show');
+          lastOverdueIds = [];
+        }
+      } catch (e) {}
+    }
+    function tryNotify(title, body) {
+      if (!('Notification' in window)) return;
+      if (Notification.permission === 'granted') { new Notification(title, { body }); }
+      else if (Notification.permission === 'default') Notification.requestPermission();
+    }
+
+    /* ============ 借用目录 ============ */
+    let activeList = [];
+    async function loadActive() {
+      try {
+        const d = await api('/api/borrows?scope=active');
+        activeList = d.list;
+        renderActive();
+      } catch (e) { showToast(e.message, 'err'); }
+    }
+    function renderActive() {
+      const kw = $('#activeSearch').value.trim().toLowerCase();
+      const f = $('#activeFilter').value;
+      let list = activeList.filter(b => {
+        if (f === 'pending' && b.status !== 'pending') return false;
+        if (f === 'confirmed' && b.status !== 'confirmed') return false;
+        if (f === 'overdue' && !b.overdue) return false;
+        if (kw && !(b.borrowerName + b.itemName + b.no + b.itemType).toLowerCase().includes(kw)) return false;
+        return true;
+      });
+      $('#activeEmpty').style.display = list.length ? 'none' : 'block';
+      $('#activeBody').innerHTML = list.map(b => {
+        const st = statusMap[b.status];
+        const overdueBadge = b.overdue ? '<span class="badge overdue" style="margin-left:4px;">⏰ 已超期</span>' : '';
+        let confirmMark = '<span style="color:var(--text-2);">—</span>';
+        if (b.status === 'confirmed') {
+          confirmMark = '<span class="confirm-mark">' + esc(b.confirmedBy) + '</span><div style="font-size:11px;color:#1559a5;">' + fmt(b.confirmedAt) + '</div>';
+        }
+        let actions = '<div class="actions">';
+        actions += '<button class="btn sm" onclick="showDetail(\'' + b.id + '\')">详情</button>';
+        if (b.status === 'pending') {
+          actions += '<button class="btn sm ok" onclick="confirmBorrow(\'' + b.id + '\')">✔ 确认借用</button>';
+          actions += '<button class="btn sm" onclick="openEdit(\'' + b.id + '\')">修改</button>';
+          actions += '<button class="btn sm danger" onclick="openCancel(\'' + b.id + '\')">取消</button>';
+        } else if (b.status === 'confirmed') {
+          actions += '<button class="btn sm ok" onclick="returnBorrow(\'' + b.id + '\')">↩ 归还确认</button>';
+          actions += '<button class="btn sm" onclick="openEdit(\'' + b.id + '\')">修改</button>';
+        }
+        actions += '</div>';
+        return '<tr class="' + (b.overdue ? 'row-overdue' : '') + '">' +
+          '<td>' + esc(b.no) + '</td>' +
+          '<td><b>' + esc(b.borrowerName) + '</b></td>' +
+          '<td>' + itemsHtml(b) + '</td>' +
+          '<td>' + itemsCount(b) + '</td>' +
+          '<td class="t">' + fmt(b.borrowTime) + '</td>' +
+          '<td class="t">' + (b.overdue ? '<span class="red-text">' + fmt(b.plannedReturnTime) + '</span>' : fmt(b.plannedReturnTime)) + '</td>' +
+          '<td>' + confirmMark + '</td>' +
+          '<td><span class="' + st[1] + '">' + st[0] + '</span>' + overdueBadge + '</td>' +
+          '<td>' + actions + '</td></tr>';
+      }).join('');
+    }
+    $('#activeSearch').addEventListener('input', renderActive);
+    $('#activeFilter').addEventListener('change', renderActive);
+
+    /* ============ 确认借用 ============ */
+    function confirmBorrow(id) {
+      if (!confirm('确认该笔借用申请？确认后将留下「确认借用」标志并放行物品。')) return;
+      api('/api/borrows/' + id + '/confirm', { method: 'POST' }).then(d => {
+        showToast('已确认借用，确认标志已留档', 'ok');
+        loadActive(); loadStats();
+      }).catch(e => showToast(e.message, 'err'));
+    }
+    function returnBorrow(id) {
+      if (!confirm('确认物品已归还？确认后记录将自动归档，不再显示在借用目录。')) return;
+      api('/api/borrows/' + id + '/return', { method: 'POST' }).then(d => {
+        showToast('归还确认成功，记录已归档', 'ok');
+        loadActive(); loadArchive(); loadStats();
+      }).catch(e => showToast(e.message, 'err'));
+    }
+    function openCancel(id) {
+      window._cancelId = id;
+      $('#cancelReason').value = '';
+      openModal('cancelModal');
+    }
+    function doCancel() {
+      api('/api/borrows/' + window._cancelId + '/cancel', { method: 'POST', body: JSON.stringify({ reason: $('#cancelReason').value.trim() }) })
+        .then(d => { closeModal('cancelModal'); showToast('已取消/驳回，记录归档', 'ok'); loadActive(); loadArchive(); loadStats(); })
+        .catch(e => showToast(e.message, 'err'));
+    }
+
+    /* ============ 详情 ============ */
+    let detailCache = {};
+    async function showDetail(id) {
+      try {
+        let b = detailCache[id] || activeList.find(x => x.id === id) || (await api('/api/borrows/' + id)).record;
+        detailCache[id] = b;
+        const st = statusMap[b.status] || ['', ''];
+        const hist = (b.history || []).map(h =>
+          '<div class="h-item"><div class="ha">' + esc(h.action) + '（' + esc(h.by) + '）</div><div class="ht">' + fmt(h.at) + (h.note ? ' · ' + esc(h.note) : '') + '</div></div>').join('');
+        $('#detailBody').innerHTML =
+          '<div class="detail-grid">' +
+          '<div class="item"><div class="k">借用单号</div><div class="v">' + esc(b.no) + '</div></div>' +
+          '<div class="item"><div class="k">状态</div><div class="v"><span class="' + st[1] + '">' + st[0] + '</span>' + (b.overdue ? ' <span class="badge overdue">⏰ 已超期</span>' : '') + '</div></div>' +
+          '<div class="item"><div class="k">借用人</div><div class="v">' + esc(b.borrowerName) + '</div></div>' +
+          '<div class="item"><div class="k">物品清单</div><div class="v">' + itemsHtml(b) + '</div></div>' +
+          '<div class="item"><div class="k">借用时间</div><div class="v">' + fmt(b.borrowTime) + '</div></div>' +
+          '<div class="item"><div class="k">计划归还时间</div><div class="v">' + (b.overdue ? '<span class="red-text">' + fmt(b.plannedReturnTime) + '</span>' : fmt(b.plannedReturnTime)) + '</div></div>' +
+          '<div class="item"><div class="k">确认借用标志</div><div class="v">' + (b.confirmedBy ? '<span class="confirm-mark">' + esc(b.confirmedBy) + '</span> <span style="font-size:12px;color:var(--text-2);">' + fmt(b.confirmedAt) + '</span>' : '—') + '</div></div>' +
+          '<div class="item"><div class="k">归还信息</div><div class="v">' + (b.returnedBy ? esc(b.returnedBy) + ' ' + fmt(b.returnedAt) : '—') + '</div></div>' +
+          (b.cancelReason ? '<div class="item full"><div class="k">取消原因</div><div class="v">' + esc(b.cancelReason) + '</div></div>' : '') +
+          (b.operatorNote ? '<div class="item full"><div class="k">运行人员备注</div><div class="v">' + esc(b.operatorNote) + '</div></div>' : '') +
+          '<div class="item full"><div class="k">手写签字</div><div class="v"><img class="sig-img" src="' + b.signature + '" alt="签字"></div></div>' +
+          '</div>' +
+          '<div class="history"><div style="font-weight:600;margin-bottom:8px;">操作记录</div>' + (hist || '<div class="empty">无</div>') + '</div>';
+        openModal('detailModal');
+      } catch (e) { showToast(e.message, 'err'); }
+    }
+
+    /* ============ 编辑 ============ */
+    let editId = null;
+    const editItemsWrap = $('#editItemsWrap');
+    const EDIT_TYPES = ['钥匙', '工具', '标识牌', '其他'];
+    function addEditItemRow(data) {
+      data = data || {};
+      const row = document.createElement('div');
+      row.className = 'item-row';
+      const sel = '<select class="it-type"><option value="">类型</option>' +
+        EDIT_TYPES.map(t => '<option value="' + t + '"' + (data.itemType === t ? ' selected' : '') + '>' + t + '</option>').join('') + '</select>';
+      const custom = '<input class="it-custom" placeholder="其他类型" style="display:none;" value="' + esc(data.custom || '') + '">';
+      const name = '<input class="it-name" placeholder="物品名称" maxlength="50" value="' + esc(data.itemName || '') + '">';
+      const qty = '<input class="it-qty" type="number" value="' + (data.quantity || 1) + '" min="1" max="999" step="1">';
+      row.innerHTML = sel + custom + name + qty + '<button type="button" class="btn sm danger it-del">删除</button>';
+      const s = row.querySelector('.it-type');
+      const c = row.querySelector('.it-custom');
+      const sync = () => { c.style.display = s.value === '其他' ? 'block' : 'none'; };
+      s.addEventListener('change', sync);
+      sync();
+      row.querySelector('.it-del').addEventListener('click', () => row.remove());
+      editItemsWrap.appendChild(row);
+    }
+    function collectEditItems() {
+      const out = [];
+      document.querySelectorAll('#editItemsWrap .item-row').forEach(row => {
+        const type = row.querySelector('.it-type').value;
+        const custom = row.querySelector('.it-custom').value.trim();
+        const name = row.querySelector('.it-name').value.trim();
+        const qty = parseInt(row.querySelector('.it-qty').value, 10);
+        const finalType = type === '其他' ? (custom || '其他') : type;
+        if (finalType && name && Number.isInteger(qty) && qty >= 1) out.push({ itemType: finalType, itemName: name, quantity: qty });
+      });
+      return out;
+    }
+    $('#editAddItem').addEventListener('click', () => addEditItemRow());
+    function openEdit(id) {
+      const b = activeList.find(x => x.id === id);
+      if (!b) return;
+      editId = id;
+      $('#editBorrowerName').value = b.borrowerName;
+      $('#editNote').value = b.operatorNote || '';
+      $('#editBorrowTime').value = toInput(b.borrowTime);
+      $('#editReturnTime').value = toInput(b.plannedReturnTime);
+      editItemsWrap.innerHTML = '';
+      const arr = (b.items && b.items.length) ? b.items : [{ itemType: b.itemType, itemName: b.itemName, quantity: b.quantity }];
+      arr.forEach(it => addEditItemRow({ itemType: ['钥匙','工具','标识牌'].includes(it.itemType) ? it.itemType : '其他', custom: ['钥匙','工具','标识牌'].includes(it.itemType) ? '' : it.itemType, itemName: it.itemName, quantity: it.quantity }));
+      openModal('editModal');
+    }
+    function toInput(v) {
+      const d = new Date(v); const p = n => String(n).padStart(2, '0');
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes());
+    }
+    async function saveEdit() {
+      const items = collectEditItems();
+      const body = {
+        borrowerName: $('#editBorrowerName').value.trim(),
+        items,
+        operatorNote: $('#editNote').value.trim(),
+        borrowTime: $('#editBorrowTime').value,
+        plannedReturnTime: $('#editReturnTime').value
+      };
+      if (!body.borrowerName) return showToast('借用人姓名不能为空', 'err');
+      if (!items.length) return showToast('请至少填写一件有效的借用物品', 'err');
+      if (items.length !== document.querySelectorAll('#editItemsWrap .item-row').length) return showToast('有物品行填写不完整，请补齐或删除', 'err');
+      try {
+        const d = await api('/api/borrows/' + editId, { method: 'PUT', body: JSON.stringify(body) });
+        closeModal('editModal');
+        showToast(d.changes.length ? '修改成功：' + d.changes.join('、') : '未作修改', 'ok');
+        loadActive(); loadStats();
+      } catch (e) { showToast(e.message, 'err'); }
+    }
+
+    /* ============ 归档 ============ */
+    let archiveList = [];
+    async function loadArchive() {
+      try {
+        const d = await api('/api/borrows?scope=archive');
+        archiveList = d.list;
+        const kw = $('#archiveSearch').value.trim().toLowerCase();
+        const list = kw ? archiveList.filter(b => (b.borrowerName + b.no + itemsHtml(b, { inline: true })).toLowerCase().includes(kw)) : archiveList;
+        $('#archiveEmpty').style.display = list.length ? 'none' : 'block';
+        $('#archiveBody').innerHTML = list.map(b => {
+          const st = statusMap[b.status];
+          const endTime = b.status === 'returned' ? b.returnedAt : (b.status === 'cancelled' ? b.updatedAt : b.createdAt);
+          const del = currentUser.role === 'admin' ? '<button class="btn sm danger" onclick="delRecord(\'' + b.id + '\')">删除</button>' : '';
+          return '<tr>' +
+            '<td>' + esc(b.no) + '</td>' +
+            '<td>' + esc(b.borrowerName) + '</td>' +
+            '<td>' + itemsHtml(b) + '</td>' +
+            '<td>' + itemsCount(b) + '</td>' +
+            '<td class="t">' + fmt(b.borrowTime) + '</td>' +
+            '<td class="t">' + (b.status === 'returned' ? fmt(b.returnedAt) : '—') + '</td>' +
+            '<td><span class="' + st[1] + '">' + st[0] + '</span>' + (b.cancelReason ? '<div style="font-size:11px;color:var(--text-2);">' + esc(b.cancelReason) + '</div>' : '') + '</td>' +
+            '<td>' + esc(b.confirmedBy || '—') + '</td>' +
+            '<td><div class="actions"><button class="btn sm" onclick="showDetail(\'' + b.id + '\')">详情</button>' + del + '</div></td></tr>';
+        }).join('');
+      } catch (e) { showToast(e.message, 'err'); }
+    }
+    $('#archiveSearch').addEventListener('input', loadArchive);
+    function delRecord(id) {
+      if (!confirm('确认删除该归档记录？此操作不可恢复！')) return;
+      api('/api/borrows/' + id, { method: 'DELETE' }).then(() => { showToast('已删除', 'ok'); loadArchive(); loadStats(); })
+        .catch(e => showToast(e.message, 'err'));
+    }
+
+    /* ============ 导出 ============ */
+    function exportCSV(scope) {
+      location.href = '/api/export?scope=' + scope;
+    }
+
+    /* ============ 物品库存 ============ */
+    async function loadInventory() {
+      try {
+        const d = await api('/api/inventory');
+        const list = d.list || [];
+        $('#invEmpty').style.display = list.length ? 'none' : 'block';
+        const byType = {};
+        list.forEach(x => { byType[x.itemType] = (byType[x.itemType] || 0) + 1; });
+        const chips = Object.entries(byType).map(([t, n]) => '<span class="inv-chip">' + esc(t) + ' ' + n + ' 种</span>').join('');
+        const totalQty = list.reduce((s, x) => s + x.total, 0);
+        $('#invSummary').innerHTML = '<div style="font-size:13px;color:var(--text-2);">共 <b>' + list.length + '</b> 种物品，库存合计 <b>' + totalQty + '</b> 件</div>' + (chips ? '<div style="margin-top:8px;">' + chips + '</div>' : '');
+        $('#invBody').innerHTML = list.map(x => {
+          const low = x.available <= 0;
+          const actions = '<button class="btn sm" onclick="openInvEdit(\'' + x.id + '\',' + x.total + ')">编辑</button> ';
+          const del = currentUser.role === 'admin' ? '<button class="btn sm danger" onclick="delInv(\'' + x.id + '\')">删除</button>' : '';
+          return '<tr' + (low ? ' class="row-overdue"' : '') + '>' +
+            '<td>' + esc(x.itemType) + '</td>' +
+            '<td><b>' + esc(x.itemName) + '</b></td>' +
+            '<td>' + x.total + '</td>' +
+            '<td>' + (x.borrowed > 0 ? '<span style="color:#e34d59;">' + x.borrowed + '</span>' : '0') + '</td>' +
+            '<td>' + (low ? '<span class="badge overdue">0（已借完）</span>' : x.available) + '</td>' +
+            '<td><div class="actions">' + actions + del + '</div></td></tr>';
+        }).join('');
+      } catch (e) { showToast(e.message, 'err'); }
+    }
+    function delInv(id) {
+      if (!confirm('确认删除该库存物品？正在借用的记录不受影响。')) return;
+      api('/api/inventory/' + id, { method: 'DELETE' }).then(() => { showToast('已删除', 'ok'); loadInventory(); })
+        .catch(e => showToast(e.message, 'err'));
+    }
+    /* 界面直接新增/编辑物品 */
+    let invEditId = null;
+    function openInvAdd() {
+      invEditId = null;
+      $('#invModalTitle').textContent = '新增物品';
+      $('#invType').value = '钥匙';
+      $('#invTypeCustom').value = ''; $('#invTypeCustom').style.display = 'none';
+      $('#invName').value = ''; $('#invQty').value = '1';
+      openModal('invModal');
+    }
+    function openInvEdit(id, total) {
+      invEditId = id;
+      $('#invModalTitle').textContent = '修改库存数量';
+      $('#invQty').value = total;
+      // 编辑时锁定类型和名称，仅可改数量
+      $('#invType').disabled = true; $('#invTypeCustom').style.display = 'none';
+      $('#invName').disabled = true;
+      openModal('invModal');
+    }
+    function closeInvModal() {
+      $('#invType').disabled = false; $('#invName').disabled = false;
+      closeModal('invModal');
+    }
+    async function saveInv() {
+      let type = $('#invType').value;
+      if (type === '其他') type = $('#invTypeCustom').value.trim() || '其他';
+      const name = $('#invName').value.trim();
+      const total = parseInt($('#invQty').value, 10);
+      if (!name) return showToast('请填写物品名称', 'err');
+      if (!Number.isInteger(total) || total < 1) return showToast('库存数量必须为不小于 1 的整数', 'err');
+      try {
+        if (invEditId) {
+          await api('/api/inventory/' + invEditId, { method: 'PUT', body: JSON.stringify({ total }) });
+          showToast('数量已更新', 'ok');
+        } else {
+          const d = await api('/api/inventory', { method: 'POST', body: JSON.stringify({ itemType: type, itemName: name, total }) });
+          showToast(d.updated ? '该物品已存在，数量已更新' : '已新增物品', 'ok');
+        }
+        closeInvModal();
+        loadInventory();
+      } catch (e) { showToast(e.message, 'err'); }
+    }
+    function downloadTemplate() { location.href = '/api/inventory/template'; }
+    async function parseCSVFile(file) {
+      const buf = new Uint8Array(await file.arrayBuffer());
+      let text = new TextDecoder('utf-8').decode(buf);
+      if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+      if ((text.match(/\uFFFD/g) || []).length > 0) {
+        try { text = new TextDecoder('gb18030').decode(buf); if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1); } catch (e) {}
+      }
+      const rows = []; let cur = '', row = [], inQ = false;
+      for (let i = 0; i < text.length; i++) {
+        const c = text[i];
+        if (inQ) {
+          if (c === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else inQ = false; }
+          else cur += c;
+        } else if (c === '"') inQ = true;
+        else if (c === ',') { row.push(cur); cur = ''; }
+        else if (c === '\n') { row.push(cur); cur = ''; rows.push(row); row = []; }
+        else if (c !== '\r') cur += c;
+      }
+      if (cur !== '' || row.length) { row.push(cur); rows.push(row); }
+      const items = [];
+      for (let i = 1; i < rows.length; i++) {
+        const r = rows[i];
+        if (!r || r.length < 3) continue;
+        const type = String(r[0] || '').trim();
+        const name = String(r[1] || '').trim();
+        const total = parseInt(r[2], 10);
+        if (type && name && Number.isInteger(total) && total >= 1) items.push({ itemType: type, itemName: name, total });
+      }
+      return items;
+    }
+    async function importInventory() {
+      const f = $('#invFile').files[0];
+      if (!f) return;
+      try {
+        const items = await parseCSVFile(f);
+        if (!items.length) { showToast('未解析到有效数据（需 物品类型,物品名称,数量 三列）', 'err'); return; }
+        const d = await api('/api/inventory/import', { method: 'POST', body: JSON.stringify({ items }) });
+        showToast('导入成功：新增 ' + d.added + ' 项，更新 ' + d.updated + ' 项', 'ok');
+        loadInventory();
+      } catch (e) { showToast(e.message, 'err'); }
+    }
+    $('#invFile').addEventListener('change', importInventory);
+
+    /* ============ 二维码 ============ */
+    async function genQR() {
+      try {
+        const base = $('#qrBase').value.trim();
+        const d = await api('/api/qrcode' + (base ? '?base=' + encodeURIComponent(base) : ''));
+        $('#qrImg').src = d.qrDataUrl;
+        $('#qrUrl').textContent = d.url;
+      } catch (e) { showToast(e.message, 'err'); }
+    }
+
+    /* ============ 用户管理 ============ */
+    let userList = [];
+    async function loadUsers() {
+      try {
+        const d = await api('/api/users');
+        userList = d.list;
+        $('#userBody').innerHTML = userList.map(u =>
+          '<tr>' +
+          '<td><b>' + esc(u.username) + '</b></td>' +
+          '<td>' + esc(u.displayName) + '</td>' +
+          '<td>' + (u.role === 'admin' ? '<span class="badge confirmed">管理员</span>' : '<span class="badge pending">运行人员</span>') + '</td>' +
+          '<td>' + (u.status === 'active' ? '<span class="badge returned">启用</span>' : '<span class="badge cancelled">停用</span>') + '</td>' +
+          '<td class="t">' + fmt(u.lastLoginAt) + '</td>' +
+          '<td><div class="actions">' +
+            (u.id === currentUser.id ? '' : '<button class="btn sm" onclick="toggleUser(\'' + u.id + '\',\'' + (u.status === 'active' ? 'disabled' : 'active') + '\')">' + (u.status === 'active' ? '停用' : '启用') + '</button>') +
+            '<button class="btn sm" onclick="resetPwd(\'' + u.id + '\')">重置密码</button>' +
+            (u.id === currentUser.id ? '' : '<button class="btn sm danger" onclick="delUser(\'' + u.id + '\',\'' + esc(u.displayName) + '\')">删除</button>') +
+          '</div></td></tr>').join('');
+      } catch (e) { showToast(e.message, 'err'); }
+    }
+    let userModalMode = 'add';
+    function openUserModal() {
+      userModalMode = 'add';
+      $('#userModalTitle').textContent = '新增用户';
+      $('#uUsername').value = ''; $('#uDisplayName').value = ''; $('#uRole').value = 'operator'; $('#uPassword').value = '';
+      $('#uPwdField').style.display = 'block'; $('#uUsername').disabled = false;
+      openModal('userModal');
+    }
+    async function saveUser() {
+      if (userModalMode === 'add') {
+        try {
+          await api('/api/users', { method: 'POST', body: JSON.stringify({ username: $('#uUsername').value.trim(), displayName: $('#uDisplayName').value.trim(), role: $('#uRole').value, password: $('#uPassword').value }) });
+          closeModal('userModal'); showToast('用户已创建', 'ok'); loadUsers();
+        } catch (e) { showToast(e.message, 'err'); }
+      }
+    }
+    function toggleUser(id, status) {
+      api('/api/users/' + id, { method: 'PUT', body: JSON.stringify({ status }) })
+        .then(() => { showToast('已更新', 'ok'); loadUsers(); }).catch(e => showToast(e.message, 'err'));
+    }
+    function delUser(id, name) {
+      if (!confirm('确认删除用户「' + name + '」？')) return;
+      api('/api/users/' + id, { method: 'DELETE' }).then(() => { showToast('已删除', 'ok'); loadUsers(); }).catch(e => showToast(e.message, 'err'));
+    }
+    function resetPwd(id) {
+      const pwd = prompt('请输入新的密码（至少 6 位）：');
+      if (pwd === null) return;
+      if (pwd.length < 6) return showToast('密码至少 6 位', 'err');
+      api('/api/users/' + id + '/reset-password', { method: 'POST', body: JSON.stringify({ password: pwd }) })
+        .then(() => showToast('密码已重置', 'ok')).catch(e => showToast(e.message, 'err'));
+    }
+
+    init();
+  </script>
+</body>
+</html>

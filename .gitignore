@@ -1,0 +1,20 @@
+# ============ 本地数据（含借用记录/签名/密码哈希，严禁提交）============
+data/
+
+# ============ 依赖与运行日志 ============
+node_modules/
+npm-debug.log*
+server.log
+server-err.log
+
+# ============ 系统文件 ============
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.tmp
+
+# ============ 临时/测试 ============
+dist/_deploy_test*
+dist/钥匙借用登记系统_完整部署包/
+dist/钥匙借用登记系统_v3.0*
+dist/钥匙借用登记系统_v4.0*

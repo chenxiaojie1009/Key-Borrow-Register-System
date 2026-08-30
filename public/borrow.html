@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>借用登记 · 归还查询</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    body { background: #eef1f6; padding: 14px; }
+    .page { max-width: 560px; margin: 0 auto; }
+    .top { text-align: center; padding: 18px 10px 12px; }
+    .top .icon { font-size: 40px; }
+    .top h1 { font-size: 20px; margin-top: 6px; }
+    .top p { color: var(--text-2); font-size: 13px; margin-top: 4px; }
+
+    /* 页签 */
+    .tabs { display: flex; background: #e3e8f0; border-radius: 12px; padding: 4px; margin-bottom: 14px; gap: 4px; }
+    .tab { flex: 1; border: none; background: transparent; padding: 11px; border-radius: 9px; font-size: 15px; font-weight: 600; color: var(--text-2); cursor: pointer; }
+    .tab.active { background: #fff; color: var(--primary); box-shadow: var(--shadow); }
+
+    .form-card { background: #fff; border-radius: 14px; padding: 20px; box-shadow: var(--shadow); }
+    .sig-box {
+      border: 1.5px dashed #b8c3d6; border-radius: 10px; background: #fafcff;
+      touch-action: none; width: 100%; height: 150px; display: block; cursor: crosshair;
+    }
+    .sig-tools { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+    .sig-tools .hint { font-size: 12px; color: var(--text-2); }
+    .item-row { display: grid; grid-template-columns: 1.1fr 1.8fr 0.8fr auto; gap: 8px; margin-bottom: 8px; align-items: start; }
+    .item-row input, .item-row select { padding: 9px 10px; font-size: 14px; }
+    .item-row .it-del { white-space: nowrap; }
+    .it-name-box { position: relative; }
+    .it-avail { font-size: 12px; color: #1559a5; margin-top: 4px; display: flex; align-items: center; gap: 4px; }
+    .it-avail .low { color: #e34d59; }
+    .it-suggest { position: absolute; top: calc(100% + 2px); left: 0; right: 0; background: #fff; border: 1px solid #dee0e3; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.12); z-index: 40; max-height: 210px; overflow-y: auto; display: none; }
+    .it-suggest.show { display: block; }
+    .it-suggest .sg-item { padding: 9px 12px; cursor: pointer; font-size: 14px; display: flex; justify-content: space-between; align-items: center; gap: 8px; border-bottom: 1px solid #f5f6f7; }
+    .it-suggest .sg-item:last-child { border-bottom: none; }
+    .it-suggest .sg-item:hover, .it-suggest .sg-item.hl { background: #e8f3ff; }
+    .it-suggest .sg-item .sg-name { font-weight: 600; }
+    .it-suggest .sg-item .sg-avail { font-size: 12px; color: var(--text-2); white-space: nowrap; }
+    .it-suggest .sg-empty { padding: 10px 12px; font-size: 13px; color: var(--text-2); }
+    @media (max-width: 480px) { .item-row { grid-template-columns: 1fr 1fr; } .item-row .it-name-box { grid-column: 1 / -1; } }
+    .submit-bar { margin-top: 18px; }
+    .btn { width: 100%; justify-content: center; padding: 12px; font-size: 16px; }
+    .double-field { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 420px) { .double-field { grid-template-columns: 1fr; } }
+
+    /* 成功提示 */
+    .success {
+      display: none; text-align: center; background: #fff; border-radius: 14px;
+      padding: 36px 24px; box-shadow: var(--shadow); margin-top: 14px;
+    }
+    .success.show { display: block; }
+    .success .ok-icon { font-size: 52px; }
+    .success h2 { margin: 12px 0 6px; font-size: 20px; color: var(--ok); }
+    .success p { color: var(--text-2); }
+    .success .info { background: var(--ok-bg); border-radius: 10px; padding: 12px; margin-top: 16px; font-size: 14px; color: #176b2a; text-align: left; line-height: 1.9; }
+    .success .btn { margin-top: 12px; }
+
+    /* 查询结果 */
+    .res-no { font-size: 16px; font-weight: 700; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+    .res-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; margin-top: 14px; }
+    .res-grid .item .k { font-size: 12px; color: var(--text-2); }
+    .res-grid .item .v { font-size: 14px; font-weight: 600; }
+    .res-grid .full { grid-column: 1 / -1; }
+    @media (max-width: 400px) { .res-grid { grid-template-columns: 1fr; } }
+    .return-strip { border-radius: 12px; padding: 14px 16px; margin-top: 14px; font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .return-strip.ok { background: var(--ok-bg); color: var(--ok); }
+    .return-strip.pending { background: var(--pending-bg); color: #9a6a00; }
+    .return-strip.overdue { background: var(--danger-bg); color: var(--danger); }
+    .return-strip .sub { font-weight: 400; font-size: 13px; }
+    .overdue-warn { margin-top: 12px; background: var(--danger-bg); border: 1px solid #f1aeb0; color: #b71c1c; border-radius: 10px; padding: 12px 14px; font-size: 14px; line-height: 1.7; }
+    .local-list { margin-top: 14px; border-top: 1px dashed var(--border); padding-top: 14px; }
+    .local-list .ll-title { font-weight: 700; font-size: 13px; color: var(--text-2); margin-bottom: 8px; }
+    .local-item { display: flex; align-items: center; justify-content: space-between; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; font-size: 14px; cursor: pointer; }
+    .local-item:hover { border-color: var(--primary); }
+    .local-item .b { color: var(--primary); font-weight: 600; }
+    .tip { background: #f0f7ff; border-radius: 10px; padding: 12px 14px; font-size: 13px; color: #14548f; line-height: 1.8; margin-top: 14px; }
+    .err-msg { color: var(--danger); font-size: 13px; margin-top: 10px; text-align: center; min-height: 18px; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="top">
+      <div class="icon">📦</div>
+      <h1>钥匙/工具/标识牌 借用</h1>
+      <p>扫码登记借用 · 也可查询归还状态</p>
+    </div>
+
+    <!-- 页签：登记 / 查询 -->
+    <div class="tabs">
+      <button class="tab active" id="tabRegisterBtn" type="button">📝 借用登记</button>
+      <button class="tab" id="tabTrackBtn" type="button">🔍 归还状态查询</button>
+    </div>
+
+    <!-- ============ 借用登记 ============ -->
+    <div class="form-card" id="registerTab">
+      <div class="field">
+        <label>借用人姓名<span class="req">*</span></label>
+        <input type="text" id="borrowerName" placeholder="请输入您的姓名" maxlength="30">
+      </div>
+
+      <div class="field">
+        <label>手写签字<span class="req">*</span></label>
+        <canvas id="sigPad" class="sig-box" width="1040" height="300"></canvas>
+        <div class="sig-tools">
+          <span class="hint">请在框内手写签名</span>
+          <button type="button" class="btn sm" id="btnClearSig">清除重签</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>借用物品<span class="req">*</span>（可添加多件）</label>
+        <div id="itemsWrap"></div>
+        <button type="button" class="btn sm" id="btnAddItem" style="width:auto;margin-top:8px;">＋ 添加物品</button>
+      </div>
+
+      <div class="double-field">
+        <div class="field">
+          <label>借用时间<span class="req">*</span></label>
+          <input type="datetime-local" id="borrowTime">
+          <div class="hint">默认当前时间，可修改</div>
+        </div>
+        <div class="field">
+          <label>计划归还时间<span class="req">*</span></label>
+          <input type="datetime-local" id="plannedReturnTime">
+          <div class="hint">默认借用时间后 8 小时，可修改</div>
+        </div>
+      </div>
+
+      <div class="submit-bar">
+        <button type="button" class="btn primary" id="btnSubmit">提交借用申请</button>
+      </div>
+    </div>
+
+    <!-- ============ 归还状态查询 ============ -->
+    <div class="form-card" id="trackTab" style="display:none;">
+      <div class="field">
+        <label>借用单号<span class="req">*</span></label>
+        <input type="text" id="qNo" placeholder="如：BR-20260829-003">
+      </div>
+      <div class="field">
+        <label>借用人姓名<span class="req">*</span></label>
+        <input type="text" id="qName" placeholder="登记时填写的姓名">
+      </div>
+      <button type="button" class="btn primary" id="btnQuery">查 询 归 还 状 态</button>
+      <div class="err-msg" id="trackErr"></div>
+
+      <div id="trackResult"></div>
+
+      <!-- 本机登记过的记录（自动识别） -->
+      <div class="local-list" id="localList" style="display:none;">
+        <div class="ll-title">本机登记过的记录（点击即可查询）：</div>
+        <div id="localItems"></div>
+      </div>
+
+      <div class="tip">💡 登记借用后，本机微信会自动记住记录，再次扫描本二维码将直接显示归还状态；若更换设备或清除缓存，请手动输入借用单号 + 借用人姓名查询。</div>
+    </div>
+
+    <!-- ============ 提交成功 ============ -->
+    <div class="success" id="successBox">
+      <div class="ok-icon">✅</div>
+      <h2>提交成功</h2>
+      <p>您的借用申请已提交，请等待运行人员审核确认。</p>
+      <div class="info" id="successInfo"></div>
+      <button type="button" class="btn primary" id="btnCheckStatus">🔍 查看归还状态</button>
+      <button type="button" class="btn" onclick="location.reload()">继续登记</button>
+      <div class="tip" style="text-align:left;">归还后，再次扫描本二维码，点「归还状态查询」即可核实运行人员是否已确认归还（显示归还人姓名与归还时间）。</div>
+    </div>
+  </div>
+
+  <script>
+    const $ = s => document.querySelector(s);
+    const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const fmt = v => v ? new Date(v).toLocaleString('zh-CN', { hour12: false }) : '';
+    const statusMap = {
+      pending:   ['待确认', 'badge pending'],
+      confirmed: ['已确认（借用中）', 'badge confirmed'],
+      returned:  ['已归还', 'badge returned'],
+      cancelled: ['已取消', 'badge cancelled']
+    };
+
+    /* ---------- 本地记录（同一微信/浏览器记住登记过的借用，便于再次扫码直接查） ---------- */
+    function getLocalRecs() { try { return JSON.parse(localStorage.getItem('kbr_recs') || '[]'); } catch (e) { return []; } }
+    function saveLocalRecs(list) { try { localStorage.setItem('kbr_recs', JSON.stringify(list)); } catch (e) {} }
+    function addLocalRec(rec) {
+      const list = getLocalRecs().filter(r => r.token !== rec.token);
+      list.unshift(rec);
+      saveLocalRecs(list.slice(0, 5));
+    }
+
+    /* ---------- 页签切换 ---------- */
+    function switchTab(name) {
+      $('#tabRegisterBtn').classList.toggle('active', name === 'register');
+      $('#tabTrackBtn').classList.toggle('active', name === 'track');
+      $('#registerTab').style.display = name === 'register' ? 'block' : 'none';
+      $('#trackTab').style.display = name === 'track' ? 'block' : 'none';
+      if (name === 'register') setTimeout(resizeCanvas, 50); // 表单隐藏时画布尺寸为0，切回时重建
+      if (name === 'track') initTrack();
+    }
+    $('#tabRegisterBtn').addEventListener('click', () => switchTab('register'));
+    $('#tabTrackBtn').addEventListener('click', () => switchTab('track'));
+
+    /* ================= 借用登记逻辑 ================= */
+    function pad(n) { return String(n).padStart(2, '0'); }
+    function toLocalInput(d) {
+      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+             'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    }
+    function fromLocalInput(v) { return v ? new Date(v) : null; }
+
+    const borrowTimeEl = $('#borrowTime');
+    const plannedReturnEl = $('#plannedReturnTime');
+    let plannedManual = false;
+    const now = new Date();
+    borrowTimeEl.value = toLocalInput(now);
+    plannedReturnEl.value = toLocalInput(new Date(now.getTime() + 8 * 3600 * 1000));
+    borrowTimeEl.addEventListener('change', () => {
+      if (!plannedManual) {
+        const b = fromLocalInput(borrowTimeEl.value);
+        if (b) plannedReturnEl.value = toLocalInput(new Date(b.getTime() + 8 * 3600 * 1000));
+      }
+    });
+    plannedReturnEl.addEventListener('change', () => { plannedManual = true; });
+
+    /* 手写签字 */
+    const canvas = $('#sigPad');
+    const ctx = canvas.getContext('2d');
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    function resizeCanvas() {
+      const rect = canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) return; // 表单未显示时保持原尺寸
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      ctx.scale(dpr, dpr);
+      ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#1f2329';
+    }
+    resizeCanvas();
+    window.addEventListener('resize', () => { const d = canvas.toDataURL(); resizeCanvas(); loadSig(d); });
+    let drawing = false;
+    function pos(e) { const rect = canvas.getBoundingClientRect(); const p = e.touches ? e.touches[0] : e; return { x: p.clientX - rect.left, y: p.clientY - rect.top }; }
+    function start(e) { e.preventDefault(); drawing = true; const p = pos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); }
+    function move(e) { if (!drawing) return; e.preventDefault(); const p = pos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); }
+    function end() { drawing = false; ctx.beginPath(); }
+    canvas.addEventListener('mousedown', start);
+    canvas.addEventListener('mousemove', move);
+    canvas.addEventListener('mouseup', end);
+    canvas.addEventListener('mouseleave', end);
+    canvas.addEventListener('touchstart', start, { passive: false });
+    canvas.addEventListener('touchmove', move, { passive: false });
+    canvas.addEventListener('touchend', end);
+    function loadSig(dataUrl) { const img = new Image(); img.onload = () => { ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.drawImage(img, 0, 0); }; img.src = dataUrl; }
+    function isEmpty() {
+      const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      for (let i = 3; i < data.length; i += 4) if (data[i] > 0) return false;
+      return true;
+    }
+    $('#btnClearSig').addEventListener('click', () => {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.scale(dpr, dpr); ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#1f2329';
+    });
+
+    /* ---------- 多物品行（类型 + 名称联想 + 可用数量） ---------- */
+    const itemsWrap = $('#itemsWrap');
+    const ITEM_TYPES = ['钥匙', '工具', '标识牌', '其他'];
+    function addItemRow(data) {
+      data = data || {};
+      const row = document.createElement('div');
+      row.className = 'item-row';
+      const sel = '<select class="it-type"><option value="">类型</option>' +
+        ITEM_TYPES.map(t => '<option value="' + t + '"' + (data.itemType === t ? ' selected' : '') + '>' + t + '</option>').join('') + '</select>';
+      const nameBox = '<div class="it-name-box">' +
+        '<input class="it-name" placeholder="输入或选择物品名称" maxlength="50" value="' + esc(data.itemName || '') + '" autocomplete="off">' +
+        '<div class="it-suggest"></div>' +
+        '<div class="it-avail" style="display:none;"></div>' +
+        '</div>';
+      const qty = '<input class="it-qty" type="number" value="' + (data.quantity || 1) + '" min="1" max="999" step="1">';
+      row.innerHTML = sel + nameBox + qty + '<button type="button" class="btn sm danger it-del">删除</button>';
+
+      const s = row.querySelector('.it-type');
+      const nameInput = row.querySelector('.it-name');
+      const suggest = row.querySelector('.it-suggest');
+      const avail = row.querySelector('.it-avail');
+      const qtyInput = row.querySelector('.it-qty');
+      let timer = null, selected = false;
+
+      const hideSuggest = () => { suggest.classList.remove('show'); };
+      const setAvail = (txt, cls) => { avail.innerHTML = txt; avail.style.display = txt ? 'block' : 'none'; avail.className = 'it-avail' + (cls ? ' ' + cls : ''); };
+
+      const syncType = () => {
+        // 类型切换后清空已选名称与候选
+        const isOther = s.value === '其他';
+        if (!isOther) { nameInput.value = ''; qtyInput.value = 1; }
+        setAvail('');
+        hideSuggest();
+        if (!isOther) triggerSearch(''); // 类型确定后立即展示该类型全部可用物品
+      };
+
+      const triggerSearch = (q) => {
+        clearTimeout(timer);
+        const type = s.value;
+        if (!type || type === '其他') { hideSuggest(); return; }
+        timer = setTimeout(async () => {
+          try {
+            const res = await fetch('/api/inventory/options?type=' + encodeURIComponent(type) + '&q=' + encodeURIComponent(q));
+            const d = await res.json().catch(() => ({ list: [] }));
+            const list = d.list || [];
+            suggest.innerHTML = '';
+            if (list.length) {
+              list.forEach(it => {
+                const el = document.createElement('div');
+                el.className = 'sg-item';
+                el.innerHTML = '<span class="sg-name">' + esc(it.itemName) + '</span><span class="sg-avail">可用 ' + it.available + ' 件</span>';
+                el.addEventListener('mousedown', e => { e.preventDefault(); pick(it); });
+                suggest.appendChild(el);
+              });
+              suggest.classList.add('show');
+            } else if (q) {
+              suggest.innerHTML = '<div class="sg-empty">未找到可用物品，可手动输入（“其他”类型可手填自定义）</div>';
+              suggest.classList.add('show');
+            } else {
+              suggest.innerHTML = '<div class="sg-empty">该类型暂无可用库存物品，可切换“其他”类型手填</div>';
+              suggest.classList.add('show');
+            }
+          } catch (e) { hideSuggest(); }
+        }, q ? 300 : 0);
+      };
+
+      const pick = (it) => {
+        nameInput.value = it.itemName;
+        selected = true;
+        setAvail('<span>『' + esc(it.itemType) + '』可用 ' + it.available + ' 件</span>' + (it.available > 1 ? '，本次借用请勿超过' : ''));
+        qtyInput.max = Math.max(1, it.available);
+        if (parseInt(qtyInput.value, 10) > it.available) qtyInput.value = it.available;
+        hideSuggest();
+        qtyInput.focus();
+      };
+
+      s.addEventListener('change', syncType);
+      nameInput.addEventListener('input', () => {
+        selected = false;
+        triggerSearch(nameInput.value.trim());
+      });
+      nameInput.addEventListener('focus', () => {
+        if (s.value && s.value !== '其他' && !selected) triggerSearch(nameInput.value.trim());
+      });
+      nameInput.addEventListener('blur', () => setTimeout(hideSuggest, 150));
+      qtyInput.addEventListener('input', () => {
+        const max = parseInt(qtyInput.max, 10);
+        if (max && max <= 999 && parseInt(qtyInput.value, 10) > max) qtyInput.value = max;
+      });
+      row.querySelector('.it-del').addEventListener('click', () => row.remove());
+      itemsWrap.appendChild(row);
+
+      if (data.itemType) { syncType(); if (data.itemName) { nameInput.value = data.itemName; } }
+      else if (data.quantity) qtyInput.value = data.quantity;
+    }
+    function collectItems() {
+      const out = [];
+      document.querySelectorAll('#itemsWrap .item-row').forEach(row => {
+        const type = row.querySelector('.it-type').value;
+        const name = row.querySelector('.it-name').value.trim();
+        const qty = parseInt(row.querySelector('.it-qty').value, 10);
+        if (type && type !== '其他' && name && Number.isInteger(qty) && qty >= 1) {
+          out.push({ itemType: type, itemName: name, quantity: qty });
+        } else if (type === '其他') {
+          const custom = name || '';
+          if (custom && Number.isInteger(qty) && qty >= 1) out.push({ itemType: '其他', itemName: custom, quantity: qty });
+        }
+      });
+      return out;
+    }
+    $('#btnAddItem').addEventListener('click', () => addItemRow());
+    addItemRow(); // 默认一行
+
+    const toast = document.getElementById('toast') || (() => { const t = document.createElement('div'); t.id = 'toast'; document.body.appendChild(t); return t; })();
+    function showToast(msg, type) { const el = document.createElement('div'); el.className = 'toast-item ' + (type || ''); el.textContent = msg; toast.appendChild(el); setTimeout(() => el.remove(), 2600); }
+
+    /* 借用人姓名自动记忆（本机浏览器记住，下次扫码自动填入） */
+    (function rememberName() {
+      const nameInput = $('#borrowerName');
+      const saved = localStorage.getItem('borrower_name') || '';
+      if (saved) { nameInput.value = saved; nameInput.focus(); }
+      nameInput.addEventListener('input', () => { localStorage.setItem('borrower_name', nameInput.value.trim()); });
+    })();
+
+    /* 提交 */
+    $('#btnSubmit').addEventListener('click', async () => {
+      const borrowerName = $('#borrowerName').value.trim();
+      const items = collectItems();
+      const borrowTime = borrowTimeEl.value;
+      const plannedReturnTime = plannedReturnEl.value;
+
+      if (!borrowerName) return showToast('请填写借用人姓名', 'err');
+      localStorage.setItem('borrower_name', borrowerName); // 提交前确保已记住
+      if (isEmpty()) return showToast('请在手写签字框内签名', 'err');
+      if (!items.length) return showToast('请至少填写一件有效的借用物品（类型、名称、数量）', 'err');
+      // 检查是否有未填写完整的行
+      let incomplete = false;
+      document.querySelectorAll('#itemsWrap .item-row').forEach(row => {
+        const s = row.querySelector('.it-type').value;
+        const n = row.querySelector('.it-name').value.trim();
+        if (s || n) incomplete = true; // 有类型或名称但未完整
+      });
+      if (incomplete && items.length !== document.querySelectorAll('#itemsWrap .item-row').length) {
+        return showToast('有物品行填写不完整，请补齐或删除', 'err');
+      }
+      if (!borrowTime || !plannedReturnTime) return showToast('请选择借用时间与计划归还时间', 'err');
+      if (new Date(plannedReturnTime).getTime() < new Date(borrowTime).getTime()) return showToast('计划归还时间不能早于借用时间', 'err');
+
+      const btn = $('#btnSubmit');
+      btn.disabled = true; btn.textContent = '提交中...';
+      try {
+        const res = await fetch('/api/borrows', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ borrowerName, signature: canvas.toDataURL('image/png'), items, borrowTime, plannedReturnTime })
+        });
+        const data = await res.json();
+        if (!res.ok) { showToast(data.error || '提交失败', 'err'); btn.disabled = false; btn.textContent = '提交借用申请'; return; }
+        // 保存本地记录，便于再次扫码直接查询归还状态
+        addLocalRec({ token: data.queryToken, no: data.record.no, name: data.record.borrowerName });
+        // 成功页
+        $('#registerTab').style.display = 'none';
+        $('#trackTab').style.display = 'none';
+        $('#tabRegisterBtn').classList.remove('active');
+        $('#tabTrackBtn').classList.remove('active');
+        const itemsHtml = data.record.items.map(it => '&nbsp;&nbsp;· ' + esc(it.itemType) + ' - ' + esc(it.itemName) + ' × ' + it.quantity + '<br>').join('');
+        $('#successInfo').innerHTML =
+          '<b>借用单号：</b>' + data.record.no + '<br>' +
+          '<b>借用人：</b>' + data.record.borrowerName + '<br>' +
+          '<b>物品清单：</b><br>' + itemsHtml +
+          '<b>借用时间：</b>' + fmt(data.record.borrowTime) + '<br>' +
+          '<b>计划归还：</b>' + fmt(data.record.plannedReturnTime);
+        $('#successBox').classList.add('show');
+      } catch (err) {
+        showToast('网络错误，请重试', 'err');
+        btn.disabled = false; btn.textContent = '提交借用申请';
+      }
+    });
+
+    /* 成功页：查看归还状态 */
+    $('#btnCheckStatus').addEventListener('click', () => {
+      $('#successBox').classList.remove('show');
+      $('#registerTab').style.display = 'none';
+      switchTab('track');
+    });
+
+    /* ================= 归还状态查询逻辑 ================= */
+    async function fetchTrack(params) {
+      const qs = new URLSearchParams(params).toString();
+      const res = await fetch('/api/track/status?' + qs);
+      const d = await res.json().catch(() => ({}));
+      return { ok: res.ok, data: d };
+    }
+
+    function renderTrack(b) {
+      const st = statusMap[b.status] || [b.status, 'badge'];
+      let html = '<div class="res-no"><span>' + esc(b.no) + '</span><span><span class="' + st[1] + '">' + st[0] + '</span>' +
+        (b.overdue ? ' <span class="badge overdue">⏰ 已超期</span>' : '') + '</span></div>';
+
+      const strip = b.status === 'returned'
+        ? '<div class="return-strip ok">✅ 已归还确认<span class="sub">' + esc(b.returnedBy) + ' · ' + fmt(b.returnedAt) + '</span></div>'
+        : b.status === 'cancelled'
+          ? '<div class="return-strip pending">⛔ 该笔借用已取消</div>'
+          : '<div class="return-strip ' + (b.overdue ? 'overdue' : 'pending') + '">' + (b.status === 'confirmed' ? '⏳ 已确认借用，尚未归还' : '⏳ 待运行人员确认借用') + '</div>';
+      html += strip;
+
+      if (b.overdue && (b.status === 'pending' || b.status === 'confirmed')) {
+        html += '<div class="overdue-warn">🚨 <b>已超过计划归还时间（' + fmt(b.plannedReturnTime) + '）仍未归还！</b><br>系统已提醒运行人员与管理员，请尽快归还。</div>';
+      }
+
+      const itemsArr = (b.items && b.items.length) ? b.items : [{ itemType: b.itemType, itemName: b.itemName, quantity: b.quantity }];
+      const itemsHtml = itemsArr.map(it => '&nbsp;&nbsp;· ' + esc(it.itemType) + ' - ' + esc(it.itemName) + ' × ' + it.quantity + '<br>').join('') || '—';
+      html += '<div class="res-grid">' +
+        '<div class="item"><div class="k">借用人</div><div class="v">' + esc(b.borrowerName) + '</div></div>' +
+        '<div class="item full"><div class="k">物品清单</div><div class="v">' + itemsHtml + '</div></div>' +
+        '<div class="item"><div class="k">借用时间</div><div class="v">' + fmt(b.borrowTime) + '</div></div>' +
+        '<div class="item"><div class="k">计划归还时间</div><div class="v">' + fmt(b.plannedReturnTime) + '</div></div>' +
+        '<div class="item"><div class="k">确认借用（运行人员）</div><div class="v">' + (b.confirmedBy ? esc(b.confirmedBy) + ' · ' + fmt(b.confirmedAt) : '尚未确认') + '</div></div>' +
+        '<div class="item"><div class="k">归还确认</div><div class="v">' + (b.returnedBy ? esc(b.returnedBy) + ' · ' + fmt(b.returnedAt) : '尚未归还') + '</div></div>' +
+        (b.cancelReason ? '<div class="item full"><div class="k">取消原因</div><div class="v">' + esc(b.cancelReason) + '</div></div>' : '') +
+        '</div>';
+      $('#trackResult').innerHTML = html;
+    }
+
+    function initTrack() {
+      $('#trackErr').textContent = '';
+      const recs = getLocalRecs();
+      // 本机登记过的记录列表
+      if (recs.length) {
+        $('#localList').style.display = 'block';
+        $('#localItems').innerHTML = recs.map(r =>
+          '<div class="local-item" onclick="queryByToken(\'' + r.token + '\')"><span class="b">' + esc(r.no) + '</span><span>' + esc(r.name) + '</span><span style="color:var(--primary);font-size:12px;">查看状态 →</span></div>').join('');
+        // 自动查询最近一笔
+        queryByToken(recs[0].token);
+      } else {
+        $('#localList').style.display = 'none';
+      }
+    }
+
+    async function queryByToken(token) {
+      $('#trackErr').textContent = '';
+      const r = await fetchTrack({ token });
+      if (r.ok) { renderTrack(r.data.record); }
+      else { $('#trackResult').innerHTML = ''; $('#trackErr').textContent = r.data.error || '查询失败'; }
+    }
+
+    $('#btnQuery').addEventListener('click', async () => {
+      const no = $('#qNo').value.trim();
+      const name = $('#qName').value.trim();
+      if (!no) return ($('#trackErr').textContent = '请输入借用单号');
+      if (!name) return ($('#trackErr').textContent = '请输入借用人姓名');
+      $('#trackErr').textContent = '';
+      const r = await fetchTrack({ no, name });
+      if (r.ok) { renderTrack(r.data.record); }
+      else { $('#trackResult').innerHTML = ''; $('#trackErr').textContent = r.data.error || '未找到对应记录'; }
+    });
+    $('#qNo, #qName').addEventListener('keydown', e => { if (e.key === 'Enter') $('#btnQuery').click(); });
+
+    /* 页面加载：本机有登记过的记录 → 自动切到查询页并显示归还状态 */
+    (function () {
+      const recs = getLocalRecs();
+      if (recs.length > 0) switchTab('track');
+    })();
+  </script>
+</body>
+</html>
