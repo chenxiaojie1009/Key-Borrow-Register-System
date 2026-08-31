@@ -143,9 +143,11 @@
       const itemsHtml = arr.map(it => '&nbsp;&nbsp;· ' + esc(it.itemType) + ' - ' + esc(it.itemName) + ' × ' + it.quantity + '<br>').join('') || '—';
       let html =
         '<div class="item"><div class="k">借用人</div><div class="v">' + esc(b.borrowerName) + '</div></div>' +
+        (b.borrowReason ? '<div class="item"><div class="k">借用原因</div><div class="v">' + esc(b.borrowReason) + '</div></div>' : '') +
         '<div class="item full"><div class="k">物品清单</div><div class="v">' + itemsHtml + '</div></div>' +
         '<div class="item"><div class="k">借用时间</div><div class="v">' + fmt(b.borrowTime) + '</div></div>' +
         '<div class="item"><div class="k">计划归还时间</div><div class="v">' + fmt(b.plannedReturnTime) + '</div></div>' +
+        (b.borrowNote ? '<div class="item full"><div class="k">备注</div><div class="v">' + esc(b.borrowNote) + '</div></div>' : '') +
         '<div class="item"><div class="k">确认借用（运行人员）</div><div class="v">' + (b.confirmedBy ? esc(b.confirmedBy) + ' · ' + fmt(b.confirmedAt) : '尚未确认') + '</div></div>' +
         '<div class="item"><div class="k">归还确认</div><div class="v">' + (b.returnedBy ? esc(b.returnedBy) + ' · ' + fmt(b.returnedAt) : '尚未归还') + '</div></div>' +
         (b.cancelReason ? '<div class="item full"><div class="k">取消原因</div><div class="v">' + esc(b.cancelReason) + '</div></div>' : '') +

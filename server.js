@@ -222,7 +222,7 @@ function normalizeInventory(input) {
 function publicBorrow(b) {
   const items = getItems(b);
   return {
-    id: b.id, no: b.no, borrowerName: b.borrowerName, signature: b.signature || null,
+    id: b.id, no: b.no, borrowerName: b.borrowerName, borrowReason: b.borrowReason || '', borrowNote: b.borrowNote || '', signature: b.signature || null,
     items,
     itemType: items[0] ? items[0].itemType : b.itemType,
     itemName: items[0] ? items[0].itemName : b.itemName,
@@ -350,6 +350,8 @@ app.get('/api/inventory/options', (req, res) => {
 app.post('/api/borrows', (req, res) => {
   const b = req.body || {};
   const borrowerName = String(b.borrowerName || '').trim();
+  const borrowReason = String(b.borrowReason || '').trim();
+  const borrowNote = String(b.borrowNote || '').trim();
   const signature = String(b.signature || '').trim();
   const borrowTime = parseDate(b.borrowTime);
   const plannedReturnTime = parseDate(b.plannedReturnTime);
@@ -360,6 +362,9 @@ app.post('/api/borrows', (req, res) => {
 
   if (!borrowerName) return res.status(400).json({ error: '请填写借用人姓名' });
   if (borrowerName.length > 30) return res.status(400).json({ error: '借用人姓名最长 30 字' });
+  if (!borrowReason) return res.status(400).json({ error: '请填写借用原因' });
+  if (borrowReason.length > 100) return res.status(400).json({ error: '借用原因最长 100 字' });
+  if (borrowNote.length > 200) return res.status(400).json({ error: '备注最长 200 字' });
   if (!signature) return res.status(400).json({ error: '请进行手写签字' });
   // 签字必须是 PNG 图片的 data URL，且不超过 2MB（同时防止把任意文本/脚本存进签字字段）
   if (!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(signature) || signature.length > 2 * 1024 * 1024) {
@@ -398,6 +403,8 @@ app.post('/api/borrows', (req, res) => {
     no: genBorrowNo(borrows),
     queryToken: crypto.randomBytes(12).toString('hex'), // 借用人查询记录状态的专属凭证
     borrowerName,
+    borrowReason,
+    borrowNote,
     signature,
     items,
     itemType: first.itemType,   // 冗余首项，兼容旧显示
@@ -437,6 +444,8 @@ function trackStatus(b) {
   return {
     no: b.no,
     borrowerName: b.borrowerName,
+    borrowReason: b.borrowReason || '',
+    borrowNote: b.borrowNote || '',
     items,
     itemType: items[0] ? items[0].itemType : b.itemType,
     itemName: items[0] ? items[0].itemName : b.itemName,
@@ -528,7 +537,9 @@ app.put('/api/borrows/:id', requireStaff, (req, res) => {
     }
   };
   setStr('borrowerName', '借用人', 30);
-  setStr('operatorNote', '备注', 200);
+  setStr('borrowReason', '借用原因', 100);
+  setStr('borrowNote', '借用人备注', 200);
+  setStr('operatorNote', '运行人员备注', 200);
   // 多物品清单修改
   if (Array.isArray(p.items)) {
     const newItems = normalizeItems(p.items);
@@ -692,17 +703,17 @@ app.get('/api/export', requireStaff, (req, res) => {
   const fmt = v => (v ? new Date(v).toLocaleString('zh-CN', { hour12: false }) : '');
   const statusMap = { pending: '待确认', confirmed: '已确认(借用中)', returned: '已归还(归档)', cancelled: '已取消(归档)' };
   const rows = [];
-  rows.push(['借用单号', '借用人', '物品清单', '借用时间', '计划归还时间', '实际归还时间', '状态', '确认人', '确认时间', '归还人', '是否超期', '备注', '创建时间']);
+  rows.push(['借用单号', '借用人', '借用原因', '物品清单', '借用时间', '计划归还时间', '实际归还时间', '状态', '确认人', '确认时间', '归还人', '是否超期', '借用人备注', '运行人员备注', '取消原因', '创建时间']);
   for (const b of borrows) {
     const items = getItems(b);
     const list = items.map(it => `${it.itemType}-${it.itemName}×${it.quantity}`).join('；');
     rows.push([
-      b.no, b.borrowerName, list,
+      b.no, b.borrowerName, b.borrowReason || '', list,
       fmt(b.borrowTime), fmt(b.plannedReturnTime), fmt(b.returnedAt),
       statusMap[b.status] || b.status,
       b.confirmedBy || '', fmt(b.confirmedAt), b.returnedBy || '',
       isOverdue(b) ? '是' : '否',
-      (b.operatorNote || '') + (b.cancelReason ? ' 取消原因:' + b.cancelReason : ''),
+      b.borrowNote || '', b.operatorNote || '', b.cancelReason || '',
       fmt(b.createdAt)
     ]);
   }

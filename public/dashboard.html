@@ -159,8 +159,8 @@
           <table>
             <thead>
               <tr>
-                <th>借用单号</th><th>借用人</th><th>物品</th><th>数量</th>
-                <th>借用时间</th><th>计划归还</th><th>确认标志</th><th>状态</th><th>操作</th>
+                <th>借用单号</th><th>借用人</th><th>借用原因</th><th>物品</th><th>数量</th>
+                <th>借用时间</th><th>计划归还</th><th>备注</th><th>确认标志</th><th>状态</th><th>操作</th>
               </tr>
             </thead>
             <tbody id="activeBody"></tbody>
@@ -213,8 +213,8 @@
           <table>
             <thead>
               <tr>
-                <th>借用单号</th><th>借用人</th><th>物品</th><th>数量</th>
-                <th>借用时间</th><th>实际归还/取消时间</th><th>状态</th><th>确认人</th><th>操作</th>
+                <th>借用单号</th><th>借用人</th><th>借用原因</th><th>物品</th><th>数量</th>
+                <th>借用时间</th><th>实际归还/取消时间</th><th>备注</th><th>状态</th><th>确认人</th><th>操作</th>
               </tr>
             </thead>
             <tbody id="archiveBody"></tbody>
@@ -298,9 +298,11 @@
       <div class="modal-head"><h3>修改借用信息（运行人员）</h3><button class="close-x" onclick="closeModal('editModal')">✕</button></div>
       <div class="modal-body">
         <div class="field"><label>借用人姓名</label><input type="text" id="editBorrowerName"></div>
+        <div class="field"><label>借用原因</label><input type="text" id="editBorrowReason" maxlength="100"></div>
         <div class="field"><label>物品清单</label><div id="editItemsWrap"></div><button type="button" class="btn sm" id="editAddItem" style="width:auto;">＋ 添加物品</button></div>
         <div class="double-field" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-          <div class="field"><label>备注</label><input type="text" id="editNote"></div>
+          <div class="field"><label>借用人备注</label><input type="text" id="editBorrowNote"></div>
+          <div class="field"><label>运行人员备注</label><input type="text" id="editNote"></div>
         </div>
         <div class="double-field" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
           <div class="field"><label>借用时间</label><input type="datetime-local" id="editBorrowTime"></div>
@@ -401,6 +403,7 @@
       const arr = (b.items && b.items.length) ? b.items : [b];
       return arr.reduce((s, it) => s + (Number(it.quantity) || 1), 0);
     }
+    function trunc(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n) + '…' : s; }
 
     function showToast(msg, type) {
       const el = document.createElement('div');
@@ -576,10 +579,12 @@
         return '<tr class="' + (b.overdue ? 'row-overdue' : '') + '">' +
           '<td>' + esc(b.no) + '</td>' +
           '<td><b>' + esc(b.borrowerName) + '</b></td>' +
+          '<td>' + esc(b.borrowReason || '—') + '</td>' +
           '<td>' + itemsHtml(b) + '</td>' +
           '<td>' + itemsCount(b) + '</td>' +
           '<td class="t">' + fmt(b.borrowTime) + '</td>' +
           '<td class="t">' + (b.overdue ? '<span class="red-text">' + fmt(b.plannedReturnTime) + '</span>' : fmt(b.plannedReturnTime)) + '</td>' +
+          '<td style="max-width:160px;">' + (b.borrowNote ? '<span title="' + esc(b.borrowNote) + '">' + esc(trunc(b.borrowNote, 20)) + '</span>' : '—') + '</td>' +
           '<td>' + confirmMark + '</td>' +
           '<td><span class="' + st[1] + '">' + st[0] + '</span>' + overdueBadge + '</td>' +
           '<td>' + actions + '</td></tr>';
@@ -628,6 +633,7 @@
           '<div class="item"><div class="k">借用单号</div><div class="v">' + esc(b.no) + '</div></div>' +
           '<div class="item"><div class="k">状态</div><div class="v"><span class="' + st[1] + '">' + st[0] + '</span>' + (b.overdue ? ' <span class="badge overdue">⏰ 已超期</span>' : '') + '</div></div>' +
           '<div class="item"><div class="k">借用人</div><div class="v">' + esc(b.borrowerName) + '</div></div>' +
+          '<div class="item"><div class="k">借用原因</div><div class="v">' + esc(b.borrowReason || '—') + '</div></div>' +
           '<div class="item"><div class="k">物品清单</div><div class="v">' + itemsHtml(b) + '</div></div>' +
           '<div class="item"><div class="k">借用时间</div><div class="v">' + fmt(b.borrowTime) + '</div></div>' +
           '<div class="item"><div class="k">计划归还时间</div><div class="v">' + (b.overdue ? '<span class="red-text">' + fmt(b.plannedReturnTime) + '</span>' : fmt(b.plannedReturnTime)) + '</div></div>' +
@@ -635,6 +641,7 @@
           '<div class="item"><div class="k">归还信息</div><div class="v">' + (b.returnedBy ? esc(b.returnedBy) + ' ' + fmt(b.returnedAt) : '—') + '</div></div>' +
           (b.cancelReason ? '<div class="item full"><div class="k">取消原因</div><div class="v">' + esc(b.cancelReason) + '</div></div>' : '') +
           (b.operatorNote ? '<div class="item full"><div class="k">运行人员备注</div><div class="v">' + esc(b.operatorNote) + '</div></div>' : '') +
+          (b.borrowNote ? '<div class="item full"><div class="k">借用人备注</div><div class="v">' + esc(b.borrowNote) + '</div></div>' : '') +
           '<div class="item full"><div class="k">手写签字</div><div class="v">' + (b.signature && /^data:image\/png;base64,/.test(b.signature) ? '<img class="sig-img" src="' + esc(b.signature) + '" alt="签字">' : '—') + '</div></div>' +
           '</div>' +
           '<div class="history"><div style="font-weight:600;margin-bottom:8px;">操作记录</div>' + (hist || '<div class="empty">无</div>') + '</div>';
@@ -682,6 +689,8 @@
       if (!b) return;
       editId = id;
       $('#editBorrowerName').value = b.borrowerName;
+      $('#editBorrowReason').value = b.borrowReason || '';
+      $('#editBorrowNote').value = b.borrowNote || '';
       $('#editNote').value = b.operatorNote || '';
       $('#editBorrowTime').value = toInput(b.borrowTime);
       $('#editReturnTime').value = toInput(b.plannedReturnTime);
@@ -698,6 +707,8 @@
       const items = collectEditItems();
       const body = {
         borrowerName: $('#editBorrowerName').value.trim(),
+        borrowReason: $('#editBorrowReason').value.trim(),
+        borrowNote: $('#editBorrowNote').value.trim(),
         items,
         operatorNote: $('#editNote').value.trim(),
         borrowTime: $('#editBorrowTime').value,
@@ -737,16 +748,18 @@
         return '<tr>' +
           '<td>' + esc(b.no) + '</td>' +
           '<td>' + esc(b.borrowerName) + '</td>' +
+          '<td>' + esc(b.borrowReason || '—') + '</td>' +
           '<td>' + itemsHtml(b) + '</td>' +
           '<td>' + itemsCount(b) + '</td>' +
           '<td class="t">' + fmt(b.borrowTime) + '</td>' +
           '<td class="t">' + (b.status === 'returned' ? fmt(b.returnedAt) : '—') + '</td>' +
+          '<td style="max-width:180px;">' + (b.borrowNote ? '<span title="' + esc(b.borrowNote) + '">' + esc(trunc(b.borrowNote, 22)) + '</span>' : '—') + '</td>' +
           '<td><span class="' + st[1] + '">' + st[0] + '</span>' + (b.cancelReason ? '<div style="font-size:11px;color:var(--text-2);">' + esc(b.cancelReason) + '</div>' : '') + '</td>' +
           '<td>' + esc(b.confirmedBy || '—') + '</td>' +
           '<td><div class="actions"><button class="btn sm" onclick="showDetail(\'' + b.id + '\')">详情</button>' + del + '</div></td></tr>';
       }).join('') +
         (filtered.length > archiveShown
-          ? '<tr><td colspan="9" style="text-align:center;padding:12px;color:var(--text-2);">已显示前 ' + archiveShown + ' 条（共 ' + filtered.length + ' 条）<button class="btn sm" style="margin-left:10px;" onclick="archiveShown += ' + ARCHIVE_PAGE_SIZE + ';renderArchive()">显示更多</button></td></tr>'
+          ? '<tr><td colspan="11" style="text-align:center;padding:12px;color:var(--text-2);">已显示前 ' + archiveShown + ' 条（共 ' + filtered.length + ' 条）<button class="btn sm" style="margin-left:10px;" onclick="archiveShown += ' + ARCHIVE_PAGE_SIZE + ';renderArchive()">显示更多</button></td></tr>'
           : '');
     }
     $('#archiveSearch').addEventListener('input', renderArchive);

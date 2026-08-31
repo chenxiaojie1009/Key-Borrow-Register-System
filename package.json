@@ -1,6 +1,6 @@
 {
   "name": "key-borrow-register-system",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "private": true,
   "description": "钥匙、工具、标识牌借用登记与归还确认系统（本地部署，端口 10800）",
   "main": "server.js",
