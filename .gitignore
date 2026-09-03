@@ -18,3 +18,4 @@ dist/_deploy_test*
 dist/钥匙借用登记系统_完整部署包/
 dist/钥匙借用登记系统_v3.0*
 dist/钥匙借用登记系统_v4.0*
+dist/*.zip

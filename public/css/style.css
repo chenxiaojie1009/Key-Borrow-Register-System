@@ -127,6 +127,10 @@ tr.row-overdue td .t { color: #b71c1c; }
 .detail-grid .full { grid-column: 1 / -1; }
 .sig-img { border: 1px solid var(--border); border-radius: 8px; background: #fff; max-width: 260px; max-height: 120px; }
 
+/* 借用人归还声明（工作台） */
+.borrower-ret-mark { margin-top: 4px; background: #e7f3ff; border: 1px solid #cfe3ff; color: #1559a5; border-radius: 6px; padding: 3px 8px; font-size: 12px; font-weight: 600; display: inline-block; line-height: 1.5; }
+.ret-photo { max-width: 240px; max-height: 180px; border-radius: 10px; border: 1px solid var(--border); background: #fff; }
+
 /* 历史时间线 */
 .history { margin-top: 12px; }
 .history .h-item { position: relative; padding-left: 18px; padding-bottom: 12px; border-left: 2px solid var(--border); }

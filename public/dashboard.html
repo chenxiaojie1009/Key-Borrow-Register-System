@@ -214,7 +214,7 @@
             <thead>
               <tr>
                 <th>借用单号</th><th>借用人</th><th>借用原因</th><th>物品</th><th>数量</th>
-                <th>借用时间</th><th>实际归还/取消时间</th><th>备注</th><th>状态</th><th>确认人</th><th>操作</th>
+                <th>借用时间</th><th>实际归还/取消时间</th><th>备注</th><th>状态</th><th>确认人</th><th>借用人声明归还</th><th>操作</th>
               </tr>
             </thead>
             <tbody id="archiveBody"></tbody>
@@ -561,6 +561,9 @@
       $('#activeBody').innerHTML = list.map(b => {
         const st = statusMap[b.status];
         const overdueBadge = b.overdue ? '<span class="badge overdue" style="margin-left:4px;">⏰ 已超期</span>' : '';
+        const brMark = (b.borrowerReturn && b.borrowerReturn.confirmed)
+          ? '<div class="borrower-ret-mark">🙋 借用人已声明归还 · ' + fmt(b.borrowerReturn.at) + '</div>'
+          : '';
         let confirmMark = '<span style="color:var(--text-2);">—</span>';
         if (b.status === 'confirmed') {
           confirmMark = '<span class="confirm-mark">' + esc(b.confirmedBy) + '</span><div style="font-size:11px;color:#1559a5;">' + fmt(b.confirmedAt) + '</div>';
@@ -586,7 +589,7 @@
           '<td class="t">' + (b.overdue ? '<span class="red-text">' + fmt(b.plannedReturnTime) + '</span>' : fmt(b.plannedReturnTime)) + '</td>' +
           '<td style="max-width:160px;">' + (b.borrowNote ? '<span title="' + esc(b.borrowNote) + '">' + esc(trunc(b.borrowNote, 20)) + '</span>' : '—') + '</td>' +
           '<td>' + confirmMark + '</td>' +
-          '<td><span class="' + st[1] + '">' + st[0] + '</span>' + overdueBadge + '</td>' +
+          '<td><span class="' + st[1] + '">' + st[0] + '</span>' + overdueBadge + brMark + '</td>' +
           '<td>' + actions + '</td></tr>';
       }).join('');
     }
@@ -639,6 +642,11 @@
           '<div class="item"><div class="k">计划归还时间</div><div class="v">' + (b.overdue ? '<span class="red-text">' + fmt(b.plannedReturnTime) + '</span>' : fmt(b.plannedReturnTime)) + '</div></div>' +
           '<div class="item"><div class="k">确认借用标志</div><div class="v">' + (b.confirmedBy ? '<span class="confirm-mark">' + esc(b.confirmedBy) + '</span> <span style="font-size:12px;color:var(--text-2);">' + fmt(b.confirmedAt) + '</span>' : '—') + '</div></div>' +
           '<div class="item"><div class="k">归还信息</div><div class="v">' + (b.returnedBy ? esc(b.returnedBy) + ' ' + fmt(b.returnedAt) : '—') + '</div></div>' +
+          (b.borrowerReturn && b.borrowerReturn.confirmed ?
+            '<div class="item full"><div class="k">借用人归还声明</div><div class="v">' + esc(b.borrowerReturn.by) + ' · ' + fmt(b.borrowerReturn.at) +
+              (b.borrowerReturn.note ? '<div style="font-weight:400;margin-top:4px;">备注：' + esc(b.borrowerReturn.note) + '</div>' : '') +
+              (b.borrowerReturn.photo ? '<div style="margin-top:6px;"><img class="ret-photo" src="' + esc(b.borrowerReturn.photo) + '" alt="归还照片" style="cursor:zoom-in;" onclick="window.open(this.src)"></div>' : '') +
+            '</div></div>' : '') +
           (b.cancelReason ? '<div class="item full"><div class="k">取消原因</div><div class="v">' + esc(b.cancelReason) + '</div></div>' : '') +
           (b.operatorNote ? '<div class="item full"><div class="k">运行人员备注</div><div class="v">' + esc(b.operatorNote) + '</div></div>' : '') +
           (b.borrowNote ? '<div class="item full"><div class="k">借用人备注</div><div class="v">' + esc(b.borrowNote) + '</div></div>' : '') +
@@ -756,10 +764,11 @@
           '<td style="max-width:180px;">' + (b.borrowNote ? '<span title="' + esc(b.borrowNote) + '">' + esc(trunc(b.borrowNote, 22)) + '</span>' : '—') + '</td>' +
           '<td><span class="' + st[1] + '">' + st[0] + '</span>' + (b.cancelReason ? '<div style="font-size:11px;color:var(--text-2);">' + esc(b.cancelReason) + '</div>' : '') + '</td>' +
           '<td>' + esc(b.confirmedBy || '—') + '</td>' +
+          '<td>' + (b.borrowerReturn && b.borrowerReturn.confirmed ? fmt(b.borrowerReturn.at) : '—') + '</td>' +
           '<td><div class="actions"><button class="btn sm" onclick="showDetail(\'' + b.id + '\')">详情</button>' + del + '</div></td></tr>';
       }).join('') +
         (filtered.length > archiveShown
-          ? '<tr><td colspan="11" style="text-align:center;padding:12px;color:var(--text-2);">已显示前 ' + archiveShown + ' 条（共 ' + filtered.length + ' 条）<button class="btn sm" style="margin-left:10px;" onclick="archiveShown += ' + ARCHIVE_PAGE_SIZE + ';renderArchive()">显示更多</button></td></tr>'
+          ? '<tr><td colspan="12" style="text-align:center;padding:12px;color:var(--text-2);">已显示前 ' + archiveShown + ' 条（共 ' + filtered.length + ' 条）<button class="btn sm" style="margin-left:10px;" onclick="archiveShown += ' + ARCHIVE_PAGE_SIZE + ';renderArchive()">显示更多</button></td></tr>'
           : '');
     }
     $('#archiveSearch').addEventListener('input', renderArchive);

@@ -33,6 +33,20 @@
     .return-strip .sub { font-weight: 400; font-size: 13px; margin-left: auto; }
 
     .overdue-warn { margin-top: 12px; background: var(--danger-bg); border: 1px solid #f1aeb0; color: #b71c1c; border-radius: 10px; padding: 12px 14px; font-size: 14px; line-height: 1.7; }
+
+    /* 借用人确认归还（非强制留档） */
+    .borrower-return-box, .borrower-return-done { margin-top: 14px; background: #f4f9ff; border: 1px solid #d6e7ff; border-radius: 12px; padding: 14px 16px; }
+    .borrower-return-box .br-title { font-weight: 700; margin-bottom: 10px; color: #1559a5; }
+    .borrower-return-box textarea { width: 100%; box-sizing: border-box; padding: 9px 10px; font-size: 14px; border: 1px solid var(--border); border-radius: 8px; font-family: inherit; resize: vertical; margin-bottom: 10px; }
+    .br-photo { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+    .br-photo .btn { width: auto; }
+    .br-photo #retPhotoPreview { width: 100%; }
+    .ret-photo { max-width: 220px; max-height: 200px; border-radius: 10px; border: 1px solid var(--border); background: #fff; margin-top: 6px; display: block; }
+    .borrower-return-box .tip-sm, .borrower-return-done .tip-sm { font-size: 12px; color: #5b7ba6; margin-top: 8px; line-height: 1.7; }
+    .borrower-return-done .brt { display: flex; align-items: center; gap: 8px; font-size: 15px; }
+    .borrower-return-done .sub { font-size: 12px; color: var(--text-2); font-weight: 400; }
+    .borrower-return-done .nr { font-size: 13px; color: #1559a5; margin-top: 6px; }
+    .ret-err { color: var(--danger); font-size: 13px; margin-top: 8px; text-align: center; min-height: 16px; }
     .tip { background: #f0f7ff; border-radius: 10px; padding: 14px 16px; font-size: 13px; color: #14548f; line-height: 1.9; margin-top: 14px; }
     .loading { text-align: center; color: var(--text-2); padding: 30px; }
   </style>
@@ -67,6 +81,9 @@
       <!-- 归还确认主状态条 -->
       <div class="return-strip" id="rReturnStrip"></div>
       <div class="overdue-warn" id="rOverdueWarn" style="display:none;"></div>
+
+      <!-- 借用人确认归还（非强制留档） -->
+      <div id="rBorrowerReturn"></div>
 
       <div class="res-grid" id="rGrid"></div>
     </div>
@@ -153,6 +170,115 @@
         (b.cancelReason ? '<div class="item full"><div class="k">取消原因</div><div class="v">' + esc(b.cancelReason) + '</div></div>' : '') +
         (b.operatorNote ? '<div class="item full"><div class="k">运行人员备注</div><div class="v">' + esc(b.operatorNote) + '</div></div>' : '');
       $('#rGrid').innerHTML = html;
+
+      // 借用人确认归还（非强制留档）
+      renderBorrowerReturnPanel(b);
+    }
+
+    /* ============ 借用人确认归还（非强制留档） ============ */
+    let currentToken = null;
+    let retPhotoData = null;
+
+    function compressPhoto(file) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        const url = URL.createObjectURL(file);
+        img.onload = () => {
+          const MAX = 1280;
+          const scale = Math.min(1, MAX / Math.max(img.width, img.height));
+          const w = Math.max(1, Math.round(img.width * scale));
+          const h = Math.max(1, Math.round(img.height * scale));
+          const c = document.createElement('canvas');
+          c.width = w; c.height = h;
+          c.getContext('2d').drawImage(img, 0, 0, w, h);
+          URL.revokeObjectURL(url);
+          resolve(c.toDataURL('image/jpeg', 0.72));
+        };
+        img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('读取图片失败')); };
+        img.src = url;
+      });
+    }
+
+    function renderBorrowerReturnPanel(b) {
+      currentToken = b.queryToken || null;
+      retPhotoData = null;
+      const box = $('#rBorrowerReturn');
+      const br = b.borrowerReturn;
+      if (b.status === 'confirmed') {
+        if (br && br.confirmed) {
+          box.innerHTML = '<div class="borrower-return-done">' +
+            '<div class="brt">🙋 <b>您已声明归还</b><span class="sub">' + fmt(br.at) + '</span></div>' +
+            (br.note ? '<div class="nr">备注：' + esc(br.note) + '</div>' : '') +
+            (br.photo ? '<img class="ret-photo" src="' + esc(br.photo) + '" alt="归还照片">' : '') +
+            '<div class="tip-sm">已记录您的归还声明。最终「已归还」状态将由运行人员确认后更新。</div></div>';
+          return;
+        }
+        box.innerHTML = '<div class="borrower-return-box">' +
+          '<div class="br-title">🙋 我已归还物品（选填，用于留档）</div>' +
+          '<textarea id="retNote" rows="2" maxlength="200" placeholder="归还说明（选填）"></textarea>' +
+          '<div class="br-photo">' +
+            '<input type="file" id="retPhotoInput" accept="image/*" style="display:none;">' +
+            '<button type="button" class="btn sm" id="btnRetPhoto">📷 拍照 / 选择照片（选填）</button>' +
+            '<button type="button" class="btn sm danger" id="btnRetPhotoRemove" style="display:none;">移除照片</button>' +
+            '<div id="retPhotoPreview"></div>' +
+          '</div>' +
+          '<button type="button" class="btn primary" id="btnBorrowerReturn">确认已归还（留档）</button>' +
+          '<div class="ret-err" id="retErr"></div>' +
+          '<div class="tip-sm">此操作仅记录您的归还声明，不作为最终结果；运行人员确认后状态才会更新为「已归还」。</div></div>';
+        bindBorrowerReturn();
+      } else if (br && br.confirmed) {
+        box.innerHTML = '<div class="borrower-return-done">' +
+          '<div class="brt">🙋 借用人归还声明<span class="sub">' + fmt(br.at) + '</span></div>' +
+          (br.note ? '<div class="nr">备注：' + esc(br.note) + '</div>' : '') +
+          (br.photo ? '<img class="ret-photo" src="' + esc(br.photo) + '" alt="归还照片">' : '') + '</div>';
+      } else {
+        box.innerHTML = '';
+      }
+    }
+
+    function bindBorrowerReturn() {
+      const photoInput = $('#retPhotoInput');
+      if (!photoInput) return;
+      $('#btnRetPhoto').addEventListener('click', () => photoInput.click());
+      $('#btnRetPhotoRemove').addEventListener('click', () => {
+        retPhotoData = null; photoInput.value = '';
+        $('#retPhotoPreview').innerHTML = '';
+        $('#btnRetPhotoRemove').style.display = 'none';
+      });
+      photoInput.addEventListener('change', async () => {
+        const f = photoInput.files[0];
+        if (!f) return;
+        try {
+          retPhotoData = await compressPhoto(f);
+          $('#retPhotoPreview').innerHTML = '<img class="ret-photo" src="' + esc(retPhotoData) + '" alt="归还照片预览">';
+          $('#btnRetPhotoRemove').style.display = '';
+        } catch (e) {
+          $('#retErr').textContent = '照片读取失败，请重试';
+          photoInput.value = '';
+        }
+      });
+      $('#btnBorrowerReturn').addEventListener('click', submitBorrowerReturn);
+    }
+
+    async function submitBorrowerReturn() {
+      if (!currentToken) return ($('#retErr').textContent = '缺少查询凭证，请重新查询');
+      const note = $('#retNote') ? $('#retNote').value.trim() : '';
+      const btn = $('#btnBorrowerReturn');
+      $('#retErr').textContent = '';
+      btn.disabled = true; btn.textContent = '提交中...';
+      try {
+        const res = await fetch('/api/track/return', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: currentToken, note, photo: retPhotoData })
+        });
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok) { $('#retErr').textContent = d.error || '提交失败'; btn.disabled = false; btn.textContent = '确认已归还（留档）'; return; }
+        render(d.record); // 重新渲染，显示“您已声明归还”
+      } catch (e) {
+        $('#retErr').textContent = '网络错误，请重试';
+        btn.disabled = false; btn.textContent = '确认已归还（留档）';
+      }
     }
 
     // URL 带 token → 直接查询（扫码进入）

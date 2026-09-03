@@ -39,8 +39,8 @@ function loadSessionSecret() {
 
 const app = express();
 app.disable('x-powered-by');
-app.use(express.json({ limit: '3mb' })); // 手写签字图片（已限制 2MB）
-app.use(express.urlencoded({ extended: true, limit: '3mb' }));
+app.use(express.json({ limit: '12mb' })); // 手写签字(≤2MB) + 借用人归还照片(≤6MB)
+app.use(express.urlencoded({ extended: true, limit: '12mb' }));
 
 /* 安全响应头；API 响应禁止缓存（含借用记录等业务数据） */
 app.use((req, res, next) => {
@@ -104,6 +104,11 @@ const trackLimiter = rateLimit({
   windowMs: 60 * 1000, maxHits: 30,
   keyOf: req => clientIP(req),
   message: '查询过于频繁，请稍后再试'
+});
+const trackReturnLimiter = rateLimit({
+  windowMs: 60 * 1000, maxHits: 10,
+  keyOf: req => clientIP(req),
+  message: '操作过于频繁，请稍后再试'
 });
 
 /* ---------------- 工具函数 ---------------- */
@@ -231,6 +236,7 @@ function publicBorrow(b) {
     status: b.status, operatorNote: b.operatorNote || '',
     confirmedBy: b.confirmedBy || null, confirmedAt: b.confirmedAt || null,
     returnedBy: b.returnedBy || null, returnedAt: b.returnedAt || null,
+    borrowerReturn: b.borrowerReturn || null,
     cancelReason: b.cancelReason || '',
     createdAt: b.createdAt, archived: !!b.archived,
     history: b.history || [],
@@ -457,6 +463,8 @@ function trackStatus(b) {
     confirmedAt: b.confirmedAt || null,
     returnedBy: b.returnedBy || null,
     returnedAt: b.returnedAt || null,
+    borrowerReturn: b.borrowerReturn || null,
+    queryToken: b.queryToken || null, // 供借用人凭自己的凭证提交“确认归还”
     cancelReason: b.cancelReason || '',
     operatorNote: b.operatorNote || '',
     overdue: isOverdue(b),
@@ -476,6 +484,45 @@ app.get('/api/track/status', trackLimiter, (req, res) => {
   if (token) b = borrows.find(x => x.queryToken === token);
   else b = borrows.find(x => x.no === no && x.borrowerName === name);
   if (!b) return res.status(404).json({ error: '未找到对应记录，请核对借用单号与借用人姓名' });
+  res.json({ ok: true, record: trackStatus(b) });
+});
+
+/* 借用人确认归还（公开，凭专属查询凭证；非强制）
+ * 只记录“借用人已声明归还”（含备注/可选照片），不改变最终状态；
+ * 最终“已归还”状态仍由运行人员在后台点「归还确认」后确定。
+ */
+app.post('/api/track/return', trackReturnLimiter, (req, res) => {
+  const p = req.body || {};
+  const token = String(p.token || '').trim();
+  if (!token) return res.status(400).json({ error: '缺少查询凭证' });
+  const borrows = store.loadBorrows();
+  const b = borrows.find(x => x.queryToken === token);
+  if (!b) return res.status(404).json({ error: '未找到对应记录' });
+  if (b.status === 'returned' || b.status === 'cancelled') {
+    return res.status(400).json({ error: '该记录已归档，无需再次确认归还' });
+  }
+  if (b.status === 'pending') {
+    return res.status(400).json({ error: '借用申请尚未被运行人员确认，暂不能确认归还' });
+  }
+  if (b.borrowerReturn && b.borrowerReturn.confirmed) {
+    return res.status(400).json({ error: '您已确认过归还，无需重复操作' });
+  }
+  const note = String(p.note || '').trim().slice(0, 200);
+  let photo = String(p.photo || '').trim() || null;
+  if (photo) {
+    // 仅允许图片 data URL（jpeg/png/webp），≤ 6MB，防止存入任意文本/脚本
+    if (!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(photo) || photo.length > 6 * 1024 * 1024) {
+      return res.status(400).json({ error: '归还照片内容无效，请重新拍照' });
+    }
+  }
+  b.borrowerReturn = { confirmed: true, by: b.borrowerName, at: nowISO(), note, photo };
+  b.updatedAt = b.borrowerReturn.at;
+  b.history = b.history || [];
+  b.history.push({
+    action: '借用人声明归还', by: b.borrowerName, at: b.borrowerReturn.at,
+    note: note || (photo ? '已附归还照片' : '已声明归还，等待运行人员确认')
+  });
+  store.saveBorrows(borrows);
   res.json({ ok: true, record: trackStatus(b) });
 });
 
@@ -620,7 +667,12 @@ app.post('/api/borrows/:id/return', requireStaff, (req, res) => {
   b.updatedAt = b.returnedAt;
   b.archived = true; // 归还完成后归档，不再显示在借用目录
   b.history = b.history || [];
-  b.history.push({ action: '归还确认', by: req.session.user.displayName, at: b.returnedAt, note: '确认物品已归还，记录归档' });
+  b.history.push({
+    action: '归还确认', by: req.session.user.displayName, at: b.returnedAt,
+    note: (b.borrowerReturn && b.borrowerReturn.confirmed)
+      ? '确认物品已归还（借用人已于 ' + b.borrowerReturn.at + ' 声明归还），记录归档'
+      : '确认物品已归还，记录归档'
+  });
   store.saveBorrows(borrows);
   res.json({ ok: true, record: publicBorrow(b) });
 });
@@ -703,7 +755,7 @@ app.get('/api/export', requireStaff, (req, res) => {
   const fmt = v => (v ? new Date(v).toLocaleString('zh-CN', { hour12: false }) : '');
   const statusMap = { pending: '待确认', confirmed: '已确认(借用中)', returned: '已归还(归档)', cancelled: '已取消(归档)' };
   const rows = [];
-  rows.push(['借用单号', '借用人', '借用原因', '物品清单', '借用时间', '计划归还时间', '实际归还时间', '状态', '确认人', '确认时间', '归还人', '是否超期', '借用人备注', '运行人员备注', '取消原因', '创建时间']);
+  rows.push(['借用单号', '借用人', '借用原因', '物品清单', '借用时间', '计划归还时间', '实际归还时间', '状态', '确认人', '确认时间', '归还人', '借用人声明归还', '借用人归还备注', '归还照片', '是否超期', '借用人备注', '运行人员备注', '取消原因', '创建时间']);
   for (const b of borrows) {
     const items = getItems(b);
     const list = items.map(it => `${it.itemType}-${it.itemName}×${it.quantity}`).join('；');
@@ -712,6 +764,9 @@ app.get('/api/export', requireStaff, (req, res) => {
       fmt(b.borrowTime), fmt(b.plannedReturnTime), fmt(b.returnedAt),
       statusMap[b.status] || b.status,
       b.confirmedBy || '', fmt(b.confirmedAt), b.returnedBy || '',
+      b.borrowerReturn && b.borrowerReturn.confirmed ? fmt(b.borrowerReturn.at) : '',
+      (b.borrowerReturn && b.borrowerReturn.note) || '',
+      b.borrowerReturn && b.borrowerReturn.photo ? '有' : '无',
       isOverdue(b) ? '是' : '否',
       b.borrowNote || '', b.operatorNote || '', b.cancelReason || '',
       fmt(b.createdAt)
