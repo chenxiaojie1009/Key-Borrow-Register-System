@@ -13,9 +13,42 @@ const session = require('express-session');
 const QRCode = require('qrcode');
 
 const store = require('./lib/store');
+const { parseDate, isOverdue, validateItems, getItems, itemsSummary, validRecords } = require('./lib/borrow-utils');
+const { buildBorrowCsv, esc: csvEsc } = require('./lib/report');
+const audit = require('./lib/audit');
+const backup = require('./lib/backup');
 
 const PORT = Number(process.env.PORT) || 10800;
 const HOST = process.env.HOST || '0.0.0.0'; // 监听所有网卡，允许手机同局域网访问
+
+/* ---------------- 数据目录单实例锁（必须在任何数据读写之前取得） ----------------
+ * 两个实例共用同一份 data 时会各自「load 整数组 → 改 → save 整数组」，互相覆盖导致静默丢记录。
+ * 抢不到锁（已有活着的实例在用这份数据）就直接拒绝启动，绝不带着风险跑起来。
+ */
+const instanceLock = store.acquireInstanceLock({ port: PORT });
+if (!instanceLock.ok) {
+  const hb = instanceLock.heldBy || {};
+  console.error(
+    '检测到另一个服务实例正在使用同一份数据（PID ' + (hb.pid || '未知') + '，端口 ' + (hb.port || '未知') + '）。' +
+    '为避免两个实例同时写 data 导致记录丢失，本次启动已中止：请先停止另一个实例（双击「停止服务.bat」）。'
+  );
+  console.error('  锁文件：' + store.LOCK_FILE + (hb.startedAt ? '（该实例启动于 ' + hb.startedAt + '）' : ''));
+  console.error('  如确认该实例已不存在，可删除上述锁文件后重新启动。');
+  process.exit(1);
+}
+
+/* 正常退出（Ctrl+C / 停止服务 / SIGTERM / 进程结束）时释放锁，避免留下死锁 */
+let shuttingDown = false;
+function shutdownServer(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  try { store.releaseInstanceLock(); } catch (e) { /* 退出路径不抛错 */ }
+  console.log(`[server] 收到 ${signal}，已释放数据目录锁并退出`);
+  process.exit(0);
+}
+process.on('SIGINT', () => shutdownServer('SIGINT'));
+process.on('SIGTERM', () => shutdownServer('SIGTERM'));
+process.on('exit', () => { try { store.releaseInstanceLock(); } catch (e) { /* 退出路径不抛错 */ } });
 
 /* ---------------- 会话密钥：优先环境变量，否则首次启动随机生成并持久化到 data/ ----------------
  * 避免在源码中硬编码密钥（重启后仍保持同一密钥，登录态不丢失）。
@@ -133,17 +166,23 @@ function getLanIP() {
 
 function nowISO() { return new Date().toISOString(); }
 
-function parseDate(v) {
-  if (!v) return null;
-  const d = new Date(v);
-  return isNaN(d.getTime()) ? null : d;
-}
-
-function isOverdue(b) {
-  if (b.status === 'returned' || b.status === 'cancelled') return false;
-  const t = parseDate(b.plannedReturnTime);
-  if (!t) return false;
-  return t.getTime() < Date.now();
+/* ---------------- 操作日志埋点 ----------------
+ * actor/username/role 默认取登录用户；借用人侧（submit / borrower_return）由调用处传入 borrower 身份。
+ */
+function auditLog(req, action, info) {
+  const i = info || {};
+  const u = (req && req.session && req.session.user) || null;
+  return audit.log({
+    action,
+    target: i.target || '',
+    targetId: i.targetId || null,
+    detail: i.detail || '',
+    actor: i.actor !== undefined ? i.actor : (u ? u.displayName : ''),
+    username: i.username !== undefined ? i.username : (u ? u.username : ''),
+    role: i.role !== undefined ? i.role : (u ? u.role : ''),
+    ip: req ? clientIP(req) : '',
+    result: i.result || 'ok'
+  });
 }
 
 function genBorrowNo(borrows) {
@@ -154,38 +193,12 @@ function genBorrowNo(borrows) {
   const prefix = `BR-${y}${m}${day}-`;
   let max = 0;
   for (const b of borrows) {
-    if (b.no && b.no.startsWith(prefix)) {
+    if (b && b.no && b.no.startsWith(prefix)) {
       const n = parseInt(b.no.slice(prefix.length), 10);
       if (!isNaN(n) && n > max) max = n;
     }
   }
   return prefix + String(max + 1).padStart(3, '0');
-}
-
-/* 多物品：规范化物品清单（兼容旧版单物品字段），并做长度/数量上限校验 */
-function normalizeItems(input) {
-  // input 可能是 {itemType,itemName,quantity} 或 [{...},...]
-  let arr = Array.isArray(input) ? input : (input && !Array.isArray(input) ? [input] : []);
-  const out = [];
-  for (const it of arr.slice(0, 20)) { // 单笔最多 20 件物品
-    if (!it) continue;
-    const type = String(it.itemType || it.type || '').trim().slice(0, 20) || '其他';
-    const name = String(it.itemName || it.name || '').trim().slice(0, 50);
-    const qty = parseInt(it.quantity ?? it.qty, 10);
-    if (!name) continue;
-    out.push({ itemType: type, itemName: name, quantity: Number.isInteger(qty) && qty >= 1 ? Math.min(qty, 999) : 1 });
-  }
-  return out;
-}
-function getItems(b) {
-  if (Array.isArray(b.items) && b.items.length) {
-    return b.items.map(it => ({ itemType: it.itemType || '其他', itemName: it.itemName, quantity: Number(it.quantity) || 1 }));
-  }
-  if (b.itemName) return [{ itemType: b.itemType || '其他', itemName: b.itemName, quantity: Number(b.quantity) || 1 }];
-  return [];
-}
-function itemsSummary(b) {
-  return getItems(b).map(it => `${it.itemType}·${it.itemName}×${it.quantity}`).join('；');
 }
 
 /* ---------------- 物品库存 ---------------- */
@@ -286,10 +299,15 @@ function isDefaultPassword(u) {
 /* ================= 认证 ================= */
 app.post('/api/login', loginLimiter, (req, res) => {
   const { username, password } = req.body || {};
-  if (!username || !password) return res.status(400).json({ error: '请输入用户名和密码' });
+  const attempted = String(username || '').trim();
+  if (!username || !password) {
+    auditLog(req, 'auth.login_fail', { actor: attempted, username: attempted, role: '', target: attempted, detail: '登录失败：未填写用户名或密码', result: 'fail' });
+    return res.status(400).json({ error: '请输入用户名和密码' });
+  }
   const users = store.loadUsers();
   const u = users.find(x => x.username === String(username).trim() && x.status === 'active');
   if (!u || !store.verifyPassword(String(password), u.passwordSalt, u.passwordHash)) {
+    auditLog(req, 'auth.login_fail', { actor: attempted, username: attempted, role: '', target: attempted, detail: '登录失败：用户名或密码错误', result: 'fail' });
     return res.status(401).json({ error: '用户名或密码错误' });
   }
   u.lastLoginAt = nowISO();
@@ -297,6 +315,7 @@ app.post('/api/login', loginLimiter, (req, res) => {
   req.session.user = {
     id: u.id, username: u.username, displayName: u.displayName, role: u.role
   };
+  auditLog(req, 'auth.login', { actor: u.displayName, username: u.username, role: u.role, target: u.displayName, targetId: u.id, detail: '登录成功' });
   res.json({
     ok: true,
     user: { id: u.id, username: u.username, displayName: u.displayName, role: u.role },
@@ -305,7 +324,11 @@ app.post('/api/login', loginLimiter, (req, res) => {
 });
 
 app.post('/api/logout', (req, res) => {
-  req.session.destroy(() => res.json({ ok: true }));
+  const u = (req.session && req.session.user) || null;
+  req.session.destroy(() => {
+    if (u) auditLog(req, 'auth.logout', { actor: u.displayName, username: u.username, role: u.role, target: u.displayName, targetId: u.id, detail: '退出登录' });
+    res.json({ ok: true });
+  });
 });
 
 app.get('/api/me', requireAuth, (req, res) => {
@@ -331,6 +354,7 @@ app.post('/api/me/password', requireAuth, (req, res) => {
   u.passwordHash = hash;
   u.passwordChangedAt = nowISO();
   store.saveUsers(users);
+  auditLog(req, 'auth.password_change', { target: u.displayName, targetId: u.id, detail: '修改自己的登录密码' });
   res.json({ ok: true });
 });
 
@@ -363,8 +387,15 @@ app.post('/api/borrows', (req, res) => {
   const plannedReturnTime = parseDate(b.plannedReturnTime);
 
   // 物品清单：优先 items 数组（多物品），兼容旧版单物品字段
-  let items = normalizeItems(b.items);
-  if (!items.length) items = normalizeItems({ itemType: b.itemType, itemName: b.itemName, quantity: b.quantity });
+  // 数量非法 / 超过 20 件一律 400，不再静默兜底成 1、静默截断或丢掉第 21 件
+  let vItems = validateItems(b.items);
+  if (!vItems.ok) return res.status(400).json({ error: vItems.error });
+  let items = vItems.items;
+  if (!items.length) {
+    vItems = validateItems({ itemType: b.itemType, itemName: b.itemName, quantity: b.quantity });
+    if (!vItems.ok) return res.status(400).json({ error: vItems.error });
+    items = vItems.items;
+  }
 
   if (!borrowerName) return res.status(400).json({ error: '请填写借用人姓名' });
   if (borrowerName.length > 30) return res.status(400).json({ error: '借用人姓名最长 30 字' });
@@ -433,6 +464,11 @@ app.post('/api/borrows', (req, res) => {
   };
   borrows.push(record);
   store.saveBorrows(borrows);
+  auditLog(req, 'borrow.submit', {
+    actor: borrowerName, username: '', role: 'borrower',
+    target: record.no, targetId: record.id,
+    detail: '提交借用申请：' + items.map(it => `${it.itemType}·${it.itemName}×${it.quantity}`).join('；')
+  });
   res.json({
     ok: true,
     record: publicBorrow(record),
@@ -481,7 +517,7 @@ app.get('/api/track/status', trackLimiter, (req, res) => {
   }
   const borrows = store.loadBorrows();
   let b = null;
-  if (token) b = borrows.find(x => x.queryToken === token);
+  if (token) b = borrows.find(x => x && x.queryToken === token);
   else b = borrows.find(x => x.no === no && x.borrowerName === name);
   if (!b) return res.status(404).json({ error: '未找到对应记录，请核对借用单号与借用人姓名' });
   res.json({ ok: true, record: trackStatus(b) });
@@ -496,7 +532,7 @@ app.post('/api/track/return', trackReturnLimiter, (req, res) => {
   const token = String(p.token || '').trim();
   if (!token) return res.status(400).json({ error: '缺少查询凭证' });
   const borrows = store.loadBorrows();
-  const b = borrows.find(x => x.queryToken === token);
+  const b = borrows.find(x => x && x.queryToken === token);
   if (!b) return res.status(404).json({ error: '未找到对应记录' });
   if (b.status === 'returned' || b.status === 'cancelled') {
     return res.status(400).json({ error: '该记录已归档，无需再次确认归还' });
@@ -523,6 +559,11 @@ app.post('/api/track/return', trackReturnLimiter, (req, res) => {
     note: note || (photo ? '已附归还照片' : '已声明归还，等待运行人员确认')
   });
   store.saveBorrows(borrows);
+  auditLog(req, 'borrow.borrower_return', {
+    actor: b.borrowerName, username: '', role: 'borrower',
+    target: b.no, targetId: b.id,
+    detail: note || (photo ? '借用人声明归还（已附归还照片）' : '借用人声明归还，等待运行人员确认')
+  });
   res.json({ ok: true, record: trackStatus(b) });
 });
 
@@ -530,7 +571,7 @@ app.get('/api/track/qr', async (req, res) => {
   const token = String(req.query.token || '').trim();
   if (!token) return res.status(400).json({ error: '缺少查询凭证' });
   const borrows = store.loadBorrows();
-  const b = borrows.find(x => x.queryToken === token);
+  const b = borrows.find(x => x && x.queryToken === token);
   if (!b) return res.status(404).json({ error: '无效的查询凭证' });
   const lanIP = getLanIP();
   const base = String(req.query.base || '').trim().replace(/\/+$/, '');
@@ -547,7 +588,7 @@ app.get('/api/track/qr', async (req, res) => {
 /* ================= 借用记录查询（管理员/运行人员） ================= */
 app.get('/api/borrows', requireStaff, (req, res) => {
   const scope = req.query.scope || 'active'; // active | archive | all
-  let borrows = store.loadBorrows();
+  let borrows = validRecords(store.loadBorrows()); // 忽略手工改坏的非对象条目，避免整表 500
   if (scope === 'active') borrows = borrows.filter(b => !b.archived && (b.status === 'pending' || b.status === 'confirmed'));
   else if (scope === 'archive') borrows = borrows.filter(b => b.archived || b.status === 'returned' || b.status === 'cancelled');
   borrows.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
@@ -556,7 +597,7 @@ app.get('/api/borrows', requireStaff, (req, res) => {
 
 app.get('/api/borrows/:id', requireStaff, (req, res) => {
   const borrows = store.loadBorrows();
-  const b = borrows.find(x => x.id === req.params.id);
+  const b = borrows.find(x => x && x.id === req.params.id);
   if (!b) return res.status(404).json({ error: '记录不存在' });
   res.json({ record: publicBorrow(b) });
 });
@@ -564,7 +605,7 @@ app.get('/api/borrows/:id', requireStaff, (req, res) => {
 /* 运行人员/管理员：修改借用人提交的信息 */
 app.put('/api/borrows/:id', requireStaff, (req, res) => {
   const borrows = store.loadBorrows();
-  const b = borrows.find(x => x.id === req.params.id);
+  const b = borrows.find(x => x && x.id === req.params.id);
   if (!b) return res.status(404).json({ error: '记录不存在' });
   if (b.status === 'returned' || b.status === 'cancelled') {
     return res.status(400).json({ error: '已归档记录不可修改' });
@@ -577,19 +618,15 @@ app.put('/api/borrows/:id', requireStaff, (req, res) => {
       if (b[key] !== v) { b[key] = v; changes.push(label); }
     }
   };
-  const setNum = (key, label) => {
-    if (p[key] !== undefined && p[key] !== null && p[key] !== '') {
-      const n = parseInt(p[key], 10);
-      if (Number.isInteger(n) && n >= 1 && n !== b[key]) { b[key] = n; changes.push(label); }
-    }
-  };
   setStr('borrowerName', '借用人', 30);
   setStr('borrowReason', '借用原因', 100);
   setStr('borrowNote', '借用人备注', 200);
   setStr('operatorNote', '运行人员备注', 200);
-  // 多物品清单修改
+  // 多物品清单修改（与 POST 走同一套严格校验：数量非法/超 20 件 → 400，不静默改值）
   if (Array.isArray(p.items)) {
-    const newItems = normalizeItems(p.items);
+    const v = validateItems(p.items);
+    if (!v.ok) return res.status(400).json({ error: v.error });
+    const newItems = v.items;
     if (!newItems.length) return res.status(400).json({ error: '至少保留一件有效物品' });
     const oldSummary = itemsSummary(b);
     const newSummary = newItems.map(it => `${it.itemType}·${it.itemName}×${it.quantity}`).join('；');
@@ -601,9 +638,21 @@ app.put('/api/borrows/:id', requireStaff, (req, res) => {
   } else {
     setStr('itemType', '物品类型');
     setStr('itemName', '物品名称');
-    setNum('quantity', '数量');
     if (p.itemType !== undefined || p.itemName !== undefined || p.quantity !== undefined) {
-      b.items = normalizeItems({ itemType: b.itemType, itemName: b.itemName, quantity: b.quantity });
+      // 旧版单物品字段路径：数量非法同样 400（原先 parseInt 失败会被静默忽略）
+      const v = validateItems([{
+        itemType: b.itemType,
+        itemName: b.itemName,
+        quantity: p.quantity !== undefined ? p.quantity : b.quantity
+      }]);
+      if (!v.ok) return res.status(400).json({ error: v.error });
+      if (!v.items.length) return res.status(400).json({ error: '至少保留一件有效物品' });
+      const next = v.items[0];
+      if (b.quantity !== next.quantity) changes.push('数量');
+      b.items = v.items;
+      b.itemType = next.itemType;
+      b.itemName = next.itemName;
+      b.quantity = next.quantity;
     }
   }
   if (p.borrowTime) {
@@ -631,6 +680,7 @@ app.put('/api/borrows/:id', requireStaff, (req, res) => {
     b.history = b.history || [];
     b.history.push({ action: '运行人员修改', by: req.session.user.displayName, at: nowISO(), note: '修改内容：' + changes.join('、') });
     store.saveBorrows(borrows);
+    auditLog(req, 'borrow.update', { target: b.no, targetId: b.id, detail: '修改内容：' + changes.join('、') });
   }
   res.json({ ok: true, record: publicBorrow(b), changes });
 });
@@ -638,7 +688,7 @@ app.put('/api/borrows/:id', requireStaff, (req, res) => {
 /* 运行人员/管理员：确认借用（留下确认借用标志） */
 app.post('/api/borrows/:id/confirm', requireStaff, (req, res) => {
   const borrows = store.loadBorrows();
-  const b = borrows.find(x => x.id === req.params.id);
+  const b = borrows.find(x => x && x.id === req.params.id);
   if (!b) return res.status(404).json({ error: '记录不存在' });
   if (b.status === 'returned' || b.status === 'cancelled') {
     return res.status(400).json({ error: '已归档记录不可确认' });
@@ -650,13 +700,14 @@ app.post('/api/borrows/:id/confirm', requireStaff, (req, res) => {
   b.history = b.history || [];
   b.history.push({ action: '确认借用', by: req.session.user.displayName, at: b.confirmedAt, note: '确认借用申请，放行物品' });
   store.saveBorrows(borrows);
+  auditLog(req, 'borrow.confirm', { target: b.no, targetId: b.id, detail: '确认借用申请，放行物品：' + itemsSummary(b) });
   res.json({ ok: true, record: publicBorrow(b) });
 });
 
 /* 运行人员/管理员：归还确认 */
 app.post('/api/borrows/:id/return', requireStaff, (req, res) => {
   const borrows = store.loadBorrows();
-  const b = borrows.find(x => x.id === req.params.id);
+  const b = borrows.find(x => x && x.id === req.params.id);
   if (!b) return res.status(404).json({ error: '记录不存在' });
   if (b.status === 'returned' || b.status === 'cancelled') {
     return res.status(400).json({ error: '该记录已归档' });
@@ -674,13 +725,17 @@ app.post('/api/borrows/:id/return', requireStaff, (req, res) => {
       : '确认物品已归还，记录归档'
   });
   store.saveBorrows(borrows);
+  auditLog(req, 'borrow.return', {
+    target: b.no, targetId: b.id,
+    detail: (b.borrowerReturn && b.borrowerReturn.confirmed) ? '归还确认：借用人已声明归还，记录归档' : '归还确认：物品已归还，记录归档'
+  });
   res.json({ ok: true, record: publicBorrow(b) });
 });
 
 /* 运行人员/管理员：取消/驳回（归档） */
 app.post('/api/borrows/:id/cancel', requireStaff, (req, res) => {
   const borrows = store.loadBorrows();
-  const b = borrows.find(x => x.id === req.params.id);
+  const b = borrows.find(x => x && x.id === req.params.id);
   if (!b) return res.status(404).json({ error: '记录不存在' });
   if (b.status === 'returned' || b.status === 'cancelled') {
     return res.status(400).json({ error: '该记录已归档' });
@@ -692,35 +747,51 @@ app.post('/api/borrows/:id/cancel', requireStaff, (req, res) => {
   b.history = b.history || [];
   b.history.push({ action: '取消/驳回', by: req.session.user.displayName, at: nowISO(), note: b.cancelReason });
   store.saveBorrows(borrows);
+  auditLog(req, 'borrow.cancel', { target: b.no, targetId: b.id, detail: '取消/驳回：' + b.cancelReason });
   res.json({ ok: true, record: publicBorrow(b) });
 });
 
 /* 管理员：删除归档记录（硬删除，控制台留痕） */
 app.delete('/api/borrows/:id', requireAdmin, (req, res) => {
   const borrows = store.loadBorrows();
-  const idx = borrows.findIndex(x => x.id === req.params.id);
+  const idx = borrows.findIndex(x => x && x.id === req.params.id);
   if (idx < 0) return res.status(404).json({ error: '记录不存在' });
   const [removed] = borrows.splice(idx, 1);
   store.saveBorrows(borrows);
   console.log(`[audit] ${nowISO()} 管理员 ${req.session.user.displayName} 删除归档记录 ${removed.no}（${removed.borrowerName}）`);
+  auditLog(req, 'borrow.delete', {
+    target: removed.no, targetId: removed.id,
+    detail: `删除归档记录（借用人：${removed.borrowerName}，物品：${itemsSummary(removed)}）`
+  });
   res.json({ ok: true, removed: removed.id });
 });
 
 /* ================= 统计 ================= */
 app.get('/api/stats', requireStaff, (req, res) => {
-  const borrows = store.loadBorrows();
+  const borrows = validRecords(store.loadBorrows()); // 忽略手工改坏的非对象条目
   const active = borrows.filter(b => !b.archived && (b.status === 'pending' || b.status === 'confirmed'));
   const pending = borrows.filter(b => b.status === 'pending' && !b.archived);
   const confirmed = borrows.filter(b => b.status === 'confirmed' && !b.archived);
   const overdue = active.filter(isOverdue);
   const archive = borrows.filter(b => b.archived || b.status === 'returned' || b.status === 'cancelled');
+  const health = store.dataHealth();
+  let bs = backup.defaultSettings();
+  try { bs = backup.loadSettings(); } catch (e) { /* 设置读取失败不影响统计 */ }
   res.json({
     pending: pending.length,
     active: active.length,
     confirmed: confirmed.length,
     overdue: overdue.length,
     archived: archive.length,
-    overdueList: overdue.map(publicBorrow)
+    overdueList: overdue.map(publicBorrow),
+    total: borrows.length,
+    lastBackupAt: bs.lastRunAt || null,
+    lastBackupOk: !!(bs.lastResult && bs.lastResult.ok),
+    dataHealth: {
+      borrowsBytes: health.borrowsBytes,
+      borrowsMtime: health.borrowsMtime,
+      quarantineCount: health.quarantine.length
+    }
   });
 });
 
@@ -740,41 +811,16 @@ app.get('/api/qrcode', requireStaff, async (req, res) => {
 /* ================= 数据导出（CSV） ================= */
 app.get('/api/export', requireStaff, (req, res) => {
   const scope = req.query.scope || 'all'; // all | active | archive
-  let borrows = store.loadBorrows();
+  let borrows = validRecords(store.loadBorrows()); // 忽略手工改坏的非对象条目：导出必须永远可用
   if (scope === 'active') borrows = borrows.filter(b => !b.archived && (b.status === 'pending' || b.status === 'confirmed'));
   else if (scope === 'archive') borrows = borrows.filter(b => b.archived || b.status === 'returned' || b.status === 'cancelled');
   borrows.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 
-  // CSV 公式注入防护：以 = + - @ 制表符开头的内容会被 Excel 当作公式执行，前置单引号使其按文本显示
-  const csvSafe = s => (/^[=+\-@\t\r]/.test(s) ? "'" + s : s);
-  const esc = v => {
-    let s = v === null || v === undefined ? '' : String(v);
-    s = csvSafe(s);
-    return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-  };
-  const fmt = v => (v ? new Date(v).toLocaleString('zh-CN', { hour12: false }) : '');
-  const statusMap = { pending: '待确认', confirmed: '已确认(借用中)', returned: '已归还(归档)', cancelled: '已取消(归档)' };
-  const rows = [];
-  rows.push(['借用单号', '借用人', '借用原因', '物品清单', '借用时间', '计划归还时间', '实际归还时间', '状态', '确认人', '确认时间', '归还人', '借用人声明归还', '借用人归还备注', '归还照片', '是否超期', '借用人备注', '运行人员备注', '取消原因', '创建时间']);
-  for (const b of borrows) {
-    const items = getItems(b);
-    const list = items.map(it => `${it.itemType}-${it.itemName}×${it.quantity}`).join('；');
-    rows.push([
-      b.no, b.borrowerName, b.borrowReason || '', list,
-      fmt(b.borrowTime), fmt(b.plannedReturnTime), fmt(b.returnedAt),
-      statusMap[b.status] || b.status,
-      b.confirmedBy || '', fmt(b.confirmedAt), b.returnedBy || '',
-      b.borrowerReturn && b.borrowerReturn.confirmed ? fmt(b.borrowerReturn.at) : '',
-      (b.borrowerReturn && b.borrowerReturn.note) || '',
-      b.borrowerReturn && b.borrowerReturn.photo ? '有' : '无',
-      isOverdue(b) ? '是' : '否',
-      b.borrowNote || '', b.operatorNote || '', b.cancelReason || '',
-      fmt(b.createdAt)
-    ]);
-  }
-  const csv = '\uFEFF' + rows.map(r => r.map(esc).join(',')).join('\r\n');
+  // CSV 生成已抽到 lib/report.js（buildBorrowCsv），列顺序/格式/公式注入防护与改造前完全一致
+  const csv = buildBorrowCsv(borrows);
   const scopeName = { all: '全部', active: '借用中', archive: '归档' }[scope] || scope;
   const fileName = `借用记录_${scopeName}_${new Date().toISOString().slice(0, 10)}.csv`;
+  auditLog(req, 'data.export', { target: scopeName, detail: `导出借用记录CSV（${scopeName}）共 ${borrows.length} 条` });
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`);
   res.send(csv);
@@ -823,10 +869,24 @@ app.post('/api/restore', requireAdmin, (req, res) => {
     if (!['admin', 'operator'].includes(u.role)) return res.status(400).json({ error: '备份中的用户角色无效' });
     if (!['active', 'disabled'].includes(u.status)) u.status = 'active';
   }
-  // 借用记录基本校验
+  // 借用记录结构校验：任何一条不合法就整体拒绝，一个字节都不写
+  // （status 缺失仍兜底为 pending 以兼容老备份；但给了非法值必须 400，不得静默改写）
   for (const b of p.borrows) {
-    if (!b || typeof b !== 'object' || !b.id) return res.status(400).json({ error: '备份中的借用记录缺少 id' });
-    if (!['pending', 'confirmed', 'returned', 'cancelled'].includes(b.status)) b.status = 'pending';
+    if (!b || typeof b !== 'object' || Array.isArray(b) || !b.id) return res.status(400).json({ error: '备份中的借用记录缺少 id' });
+    const tag = b.no || b.id;
+    if (b.status === undefined || b.status === null || b.status === '') b.status = 'pending';
+    else if (!['pending', 'confirmed', 'returned', 'cancelled'].includes(b.status)) {
+      return res.status(400).json({ error: `备份中的借用记录 ${tag} 状态无效（${String(b.status).slice(0, 20)}）` });
+    }
+    // items 必须是数组且每项都是对象：坏 items 落盘后会同时搞崩导出与备份（导出 500 / 备份永久失败）
+    if (b.items !== undefined && b.items !== null) {
+      if (!Array.isArray(b.items)) return res.status(400).json({ error: `备份中的借用记录 ${tag} 的 items 必须是数组` });
+      for (const it of b.items) {
+        if (!it || typeof it !== 'object' || Array.isArray(it)) {
+          return res.status(400).json({ error: `备份中的借用记录 ${tag} 的物品项格式不正确（不能为 null 或非对象）` });
+        }
+      }
+    }
   }
   // 库存数据基本校验
   for (const it of p.inventory) {
@@ -852,6 +912,10 @@ app.post('/api/restore', requireAdmin, (req, res) => {
   store.saveBorrows(p.borrows);
   store.saveInventory(p.inventory);
   console.log(`[audit] ${nowISO()} 管理员 ${req.session.user.displayName} 完成数据还原：用户 ${p.users.length}、借用记录 ${p.borrows.length}、库存 ${p.inventory.length}${bakDir ? '（还原前备份：' + bakDir + '）' : ''}`);
+  auditLog(req, 'data.restore', {
+    target: '数据还原',
+    detail: `还原全部数据：用户 ${p.users.length}、借用记录 ${p.borrows.length}、库存 ${p.inventory.length}`
+  });
   res.json({
     ok: true,
     restored: { users: p.users.length, borrows: p.borrows.length, inventory: p.inventory.length },
@@ -880,6 +944,10 @@ app.post('/api/inventory/import', requireStaff, (req, res) => {
     else { inv.push({ id: store.newId('i'), itemType: it.itemType, itemName: it.itemName, total: it.total, createdAt: nowISO() }); added++; }
   }
   store.saveInventory(inv);
+  auditLog(req, 'inventory.import', {
+    target: '库存导入',
+    detail: `导入库存共 ${items.length} 项（新增 ${added}、更新 ${updated}）`
+  });
   res.json({ ok: true, added, updated });
 });
 
@@ -898,9 +966,18 @@ app.post('/api/inventory', requireStaff, (req, res) => {
   const it = items[0];
   const inv = store.loadInventory();
   const found = inv.find(x => x.itemType === it.itemType && x.itemName === it.itemName);
-  if (found) { found.total = it.total; store.saveInventory(inv); return res.json({ ok: true, updated: true }); }
-  inv.push({ id: store.newId('i'), itemType: it.itemType, itemName: it.itemName, total: it.total, createdAt: nowISO() });
+  const target = `${it.itemType}·${it.itemName}`;
+  if (found) {
+    const old = found.total;
+    found.total = it.total;
+    store.saveInventory(inv);
+    auditLog(req, 'inventory.update', { target, targetId: found.id, detail: `库存数量 ${old} → ${it.total}` });
+    return res.json({ ok: true, updated: true });
+  }
+  const rec = { id: store.newId('i'), itemType: it.itemType, itemName: it.itemName, total: it.total, createdAt: nowISO() };
+  inv.push(rec);
   store.saveInventory(inv);
+  auditLog(req, 'inventory.add', { target, targetId: rec.id, detail: `新增物品，库存数量 ${it.total}` });
   res.json({ ok: true, added: true });
 });
 
@@ -911,8 +988,10 @@ app.put('/api/inventory/:id', requireStaff, (req, res) => {
   if (!it) return res.status(404).json({ error: '物品不存在' });
   const total = parseInt((req.body || {}).total, 10);
   if (!Number.isInteger(total) || total < 1) return res.status(400).json({ error: '数量必须为不小于 1 的整数' });
+  const old = it.total;
   it.total = total;
   store.saveInventory(inv);
+  auditLog(req, 'inventory.update', { target: `${it.itemType}·${it.itemName}`, targetId: it.id, detail: `库存数量 ${old} → ${total}` });
   res.json({ ok: true });
 });
 
@@ -921,8 +1000,10 @@ app.delete('/api/inventory/:id', requireAdmin, (req, res) => {
   const inv = store.loadInventory();
   const i = inv.findIndex(x => x.id === req.params.id);
   if (i < 0) return res.status(404).json({ error: '物品不存在' });
+  const removed = inv[i];
   inv.splice(i, 1);
   store.saveInventory(inv);
+  auditLog(req, 'inventory.delete', { target: `${removed.itemType}·${removed.itemName}`, targetId: removed.id, detail: `删除物品（原库存数量 ${removed.total}）` });
   res.json({ ok: true });
 });
 
@@ -952,6 +1033,10 @@ app.post('/api/users', requireAdmin, (req, res) => {
     displayName, role, status: 'active', createdAt: nowISO(), lastLoginAt: null
   });
   store.saveUsers(users);
+  auditLog(req, 'user.add', {
+    target: displayName,
+    detail: `新增用户 ${username}（${role === 'admin' ? '管理员' : '运行人员'}）`
+  });
   res.json({ ok: true });
 });
 
@@ -960,13 +1045,24 @@ app.put('/api/users/:id', requireAdmin, (req, res) => {
   const u = users.find(x => x.id === req.params.id);
   if (!u) return res.status(404).json({ error: '用户不存在' });
   const p = req.body || {};
-  if (p.displayName !== undefined && String(p.displayName).trim()) u.displayName = String(p.displayName).trim();
-  if (p.role === 'admin' || p.role === 'operator') u.role = p.role;
+  const changes = [];
+  if (p.displayName !== undefined && String(p.displayName).trim() && u.displayName !== String(p.displayName).trim()) {
+    u.displayName = String(p.displayName).trim(); changes.push('显示名称');
+  }
+  if ((p.role === 'admin' || p.role === 'operator') && u.role !== p.role) {
+    u.role = p.role; changes.push('角色');
+  }
   if (p.status === 'active' || p.status === 'disabled') {
     // 不允许禁用自己
-    if (!(p.status === 'disabled' && u.id === req.session.user.id)) u.status = p.status;
+    if (!(p.status === 'disabled' && u.id === req.session.user.id) && u.status !== p.status) {
+      u.status = p.status; changes.push('状态');
+    }
   }
   store.saveUsers(users);
+  auditLog(req, 'user.update', {
+    target: u.displayName, targetId: u.id,
+    detail: changes.length ? `修改用户 ${u.username}：${changes.join('、')}` : `修改用户 ${u.username}（无字段变化）`
+  });
   res.json({ ok: true });
 });
 
@@ -975,8 +1071,10 @@ app.delete('/api/users/:id', requireAdmin, (req, res) => {
   const idx = users.findIndex(x => x.id === req.params.id);
   if (idx < 0) return res.status(404).json({ error: '用户不存在' });
   if (users[idx].id === req.session.user.id) return res.status(400).json({ error: '不能删除当前登录账号' });
+  const removed = users[idx];
   users.splice(idx, 1);
   store.saveUsers(users);
+  auditLog(req, 'user.delete', { target: removed.displayName, targetId: removed.id, detail: `删除用户 ${removed.username}` });
   res.json({ ok: true });
 });
 
@@ -990,13 +1088,90 @@ app.post('/api/users/:id/reset-password', requireAdmin, (req, res) => {
   u.passwordSalt = salt;
   u.passwordHash = hash;
   store.saveUsers(users);
+  auditLog(req, 'user.reset_password', { target: u.displayName, targetId: u.id, detail: `重置用户 ${u.username} 的密码` });
   res.json({ ok: true });
+});
+
+/* ================= 操作日志（管理员）：查询 / 导出 ================= */
+app.get('/api/logs', requireAdmin, (req, res) => {
+  const r = audit.query(req.query || {});
+  res.json({ ok: true, total: r.total, page: r.page, pageSize: r.pageSize, list: r.list });
+});
+
+app.get('/api/logs/export', requireAdmin, (req, res) => {
+  const list = audit.queryAll(req.query || {}, 20000);
+  const fmtAt = v => (v ? new Date(v).toLocaleString('zh-CN', { hour12: false }) : '');
+  const rows = [['时间', '成员', '账号', '角色', '操作', '对象', '详情', 'IP', '结果']];
+  for (const e of list) {
+    rows.push([
+      fmtAt(e.at), e.actor || '', e.username || '', e.role || '',
+      e.label || e.action || '', e.target || '', e.detail || '', e.ip || '', e.result || ''
+    ]);
+  }
+  const csv = '\uFEFF' + rows.map(r => r.map(csvEsc).join(',')).join('\r\n');
+  const fileName = `操作日志_${new Date().toISOString().slice(0, 10)}.csv`;
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`);
+  res.send(csv);
+});
+
+/* ================= 自动备份（管理员） ================= */
+app.get('/api/backup/settings', requireAdmin, (req, res) => {
+  res.json({ settings: backup.loadSettings(), files: backup.listBackups(), scheduler: backup.schedulerStatus() });
+});
+
+app.put('/api/backup/settings', requireAdmin, (req, res) => {
+  let settings;
+  try {
+    settings = backup.saveSettings(req.body || {});
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+  const hh = String(settings.hour).padStart(2, '0');
+  const mm = String(settings.minute).padStart(2, '0');
+  auditLog(req, 'backup.settings_update', {
+    target: '自动备份设置',
+    detail: `启用=${settings.enabled ? '是' : '否'}，备份时间=${backup.WEEK_LABELS[settings.weekday]} ${hh}:${mm}，保留 ${settings.keep} 份`
+  });
+  res.json({ ok: true, settings });
+});
+
+app.post('/api/backup/run', requireAdmin, (req, res) => {
+  const result = backup.runBackup({ trigger: 'manual', by: req.session.user.displayName });
+  auditLog(req, 'data.backup_manual', {
+    target: result.jsonName || '手动备份',
+    detail: result.ok
+      ? `手动备份完成：${result.jsonName}、${result.csvName}（借用记录 ${result.counts.borrows} 条）`
+      : ('手动备份失败：' + result.error),
+    result: result.ok ? 'ok' : 'fail'
+  });
+  res.json({ ok: result.ok, result });
+});
+
+app.get('/api/backup/list', requireAdmin, (req, res) => {
+  res.json({ list: backup.listBackups() });
+});
+
+app.get('/api/backup/download/:name', requireAdmin, (req, res) => {
+  const name = String(req.params.name || '');
+  const file = backup.resolveBackupFile(name);
+  if (!file) return res.status(404).json({ error: '备份文件不存在' });
+  res.setHeader('Content-Type', /\.csv$/i.test(name) ? 'text/csv; charset=utf-8' : 'application/json; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(name)}`);
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(fs.readFileSync(file));
 });
 
 /* ================= 兜底：API 404 返回 JSON、统一错误处理 ================= */
 app.use('/api', (req, res) => res.status(404).json({ error: '接口不存在' }));
 
 app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
+  // 数据文件损坏（已隔离到 data/quarantine 并尝试从 .bak 恢复）→ 503，绝不 500、绝不让写接口把历史覆盖掉
+  if (err && (err instanceof store.DataError || err.code === 'DATA_UNREADABLE')) {
+    console.error('[server] 数据文件不可读:', err.file || '', err.message);
+    if (res.headersSent) return;
+    return res.status(503).json({ error: '数据文件损坏：已隔离到 data/quarantine 并尝试自动恢复，请检查该目录后重启服务；若仍无法自动恢复，请用 data/backups 里的备份（或手工下载的 JSON 备份）人工还原' });
+  }
   if (err && (err.type === 'entity.parse.failed' || err instanceof SyntaxError)) {
     return res.status(400).json({ error: '请求体格式错误' });
   }
@@ -1009,6 +1184,19 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
 });
 
 /* ================= 启动 ================= */
+/* 启动自检：清理遗留 tmp → 数据文件自检 → 清理超期日志（数据异常只提示不阻断启动） */
+console.log('[启动自检] 已取得数据目录单实例锁:', instanceLock.lockFile);
+const tmpCleaned = store.cleanupTmp();
+const startup = store.selfCheck();
+console.log(`[启动自检] 清理遗留临时文件 ${tmpCleaned} 个；数据文件 users=${startup.users} borrows=${startup.borrows} inventory=${startup.inventory}`);
+// 自动恢复必须显式可见：不能出现「日志平静打印 borrows=0、实际历史被清空」的情况
+for (const r of startup.recoveries) console.warn('[启动自检] 发生自动恢复:', r);
+if (!startup.ok) {
+  for (const e of startup.errors) console.error('[启动自检] 数据文件异常:', e);
+  console.error('[启动自检] 损坏文件已隔离到 data/quarantine；可从 data/backups 或同名 .bak 恢复后重启服务');
+}
+console.log(`[启动自检] 清理超期操作日志 ${audit.cleanup(180)} 个`);
+
 app.listen(PORT, HOST, () => {
   const lanIP = getLanIP();
   console.log('==========================================================');
@@ -1018,4 +1206,20 @@ app.listen(PORT, HOST, () => {
   console.log('  借用登记二维码页: /borrow');
   console.log('  默认账号: admin / admin123（管理员）；operator1 / 123456（运行人员）');
   console.log('==========================================================');
+  // 自动备份调度器：启动立即检查一次（补做错过的计划），之后每分钟检查
+  const st = backup.startScheduler({
+    onRun: r => {
+      audit.log({
+        action: 'data.backup_auto',
+        target: r.jsonName || '自动备份',
+        actor: '系统', username: '', role: 'system',
+        detail: r.ok
+          ? `自动备份完成：${r.jsonName}、${r.csvName}（借用记录 ${r.counts.borrows} 条）`
+          : ('自动备份失败：' + r.error),
+        result: r.ok ? 'ok' : 'fail'
+      });
+      console.log('[自动备份]', r.ok ? `${r.jsonName} / ${r.csvName}` : ('失败：' + r.error));
+    }
+  });
+  console.log('[自动备份] 调度器已启动，下次计划:', st.nextRunAt);
 });

@@ -154,3 +154,25 @@ tr.row-overdue td .t { color: #b71c1c; }
 
 /* 页脚 */
 .footer { text-align: center; color: var(--text-2); font-size: 12px; padding: 20px 0; }
+
+/* ============ v1.5：操作日志 ============ */
+input[type=date] {
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+  font-size: 14px; font-family: inherit; background: #fff; color: var(--text);
+}
+input[type=date]:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(31,111,235,.12); }
+.toolbar input[type=date] { width: 150px; }
+.log-detail { display: inline-block; max-width: 320px; word-break: break-all; }
+.pager { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 12px; color: var(--text-2); font-size: 13px; }
+
+/* ============ v1.5：自动备份设置 / 概览提醒 ============ */
+.stat-card.backup .num { font-size: 17px; padding-top: 7px; word-break: break-all; }
+.bk-status {
+  display: flex; gap: 18px; flex-wrap: wrap; background: #f5f7fa; border-radius: 8px;
+  padding: 10px 14px; font-size: 13px; color: var(--text-2); margin-bottom: 14px;
+}
+.bk-status b { color: var(--text); }
+.bk-form { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin-bottom: 14px; }
+.bk-form .bk-item { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; }
+.bk-form .bk-item select, .bk-form .bk-num { width: auto; padding: 6px 8px; }
+.bk-form .bk-num { width: 80px; }

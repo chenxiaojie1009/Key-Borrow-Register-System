@@ -87,6 +87,7 @@
       <a data-sec="archive"><span>🗂️</span><span class="lbl">历史归档</span><span class="count" id="menuArchive"></span></a>
       <a data-sec="qr"><span>📱</span><span class="lbl">借用二维码</span></a>
       <a data-sec="export"><span>📤</span><span class="lbl">数据导出</span></a>
+      <a data-sec="logs" id="menuLogs" style="display:none"><span>🧾</span><span class="lbl">操作日志</span></a>
       <a data-sec="users" id="menuUsers" style="display:none"><span>👥</span><span class="lbl">用户管理</span></a>
     </nav>
     <div class="logout">
@@ -117,6 +118,24 @@
         <button class="close" onclick="document.getElementById('pwdBanner').style.display='none'">✕</button>
       </div>
 
+      <!-- 数据健康提醒（损坏文件已隔离） -->
+      <div class="overdue-banner warn" id="dataHealthBanner">
+        <span class="bell">🧯</span>
+        <div>
+          <div id="dataHealthTitle"></div>
+          <div class="detail" id="dataHealthDetail"></div>
+        </div>
+      </div>
+
+      <!-- 备份过期提醒 -->
+      <div class="overdue-banner warn" id="backupStaleBanner">
+        <span class="bell">⏰</span>
+        <div>
+          <div>建议立即备份</div>
+          <div class="detail" id="backupStaleDetail"></div>
+        </div>
+      </div>
+
       <!-- 全局超期提醒横幅 -->
       <div class="overdue-banner" id="overdueBanner">
         <span class="bell">🚨</span>
@@ -135,6 +154,8 @@
           <div class="stat-card active"><div class="num" id="stActive">0</div><div class="lbl">借用中（已确认）</div></div>
           <div class="stat-card overdue"><div class="num" id="stOverdue">0</div><div class="lbl">已超期未归还</div></div>
           <div class="stat-card archived"><div class="num" id="stArchived">0</div><div class="lbl">已归档记录</div></div>
+          <div class="stat-card"><div class="num" id="stTotal">0</div><div class="lbl">记录总数（含归档）</div></div>
+          <div class="stat-card backup"><div class="num" id="stBackupAt">—</div><div class="lbl" id="stBackupLbl">上次备份时间</div></div>
         </div>
         <div class="card">
           <div class="page-title" style="padding:16px 18px 0;">⚠ 超期未归还提醒</div>
@@ -263,6 +284,75 @@
             导出的字段包含：借用单号、借用人、物品类型、物品名称、数量、借用时间、计划归还时间、实际归还时间、状态、确认人、确认时间、归还人、是否超期、备注、创建时间。<br>
             <b>数据备份与还原</b>（仅管理员）：点击「备份全部数据」可下载包含账号、借用记录、库存的 JSON 备份文件，建议定期备份；需要恢复时点击「还原数据」选择该备份文件即可一键恢复，还原前系统会自动把当前数据备份到 <code>data/restore-backup-时间戳/</code> 目录，操作安全可逆。
           </div>
+        </div>
+        <!-- ⏰ 自动备份设置（管理员） -->
+        <div class="card" id="backupCard" style="display:none;padding:20px;margin-top:16px;">
+          <div class="page-title" style="padding:0 0 6px;">⏰ 自动备份设置（管理员）</div>
+          <div style="font-size:13px;color:var(--text-2);margin-bottom:14px;">
+            系统按设定时间把账号、借用记录、库存打包备份到服务器 <code>data/backups/</code>：JSON 可直接还原，CSV 可用 Excel 打开；错过计划时间会在服务下次启动时补做一次。
+          </div>
+          <div class="bk-status">
+            <span>上次备份：<b id="bkLastRun">—</b></span>
+            <span>备份结果：<b id="bkLastResult">—</b></span>
+            <span>调度器：<b id="bkScheduler">—</b></span>
+          </div>
+          <div class="bk-form">
+            <label class="bk-item"><input type="checkbox" id="bkEnabled"> 启用自动备份</label>
+            <label class="bk-item">备份时间
+              <select id="bkWeekday" style="width:auto;">
+                <option value="0">周日</option><option value="1">周一</option><option value="2">周二</option>
+                <option value="3">周三</option><option value="4">周四</option><option value="5">周五</option><option value="6">周六</option>
+              </select>
+            </label>
+            <label class="bk-item">时 <select id="bkHour" style="width:auto;"></select></label>
+            <label class="bk-item">分 <select id="bkMinute" style="width:auto;"></select></label>
+            <label class="bk-item">保留份数 <input type="number" id="bkKeep" class="bk-num" min="1" max="100" step="1" value="12"></label>
+          </div>
+          <div class="toolbar" style="margin-bottom:4px;">
+            <button class="btn primary" onclick="saveBackupSettings()">💾 保存自动备份设置</button>
+            <button class="btn ok" onclick="runBackupNow()">💾 立即备份</button>
+            <button class="btn" onclick="loadBackupSettings()">🔄 刷新</button>
+          </div>
+          <div class="page-title" style="padding:14px 0 6px;font-size:15px;">备份记录
+            <span style="font-size:12px;color:var(--text-2);font-weight:400;">（最新在前，仅显示服务器备份目录中的文件）</span>
+          </div>
+          <div class="table-scroll">
+            <table style="min-width:560px;">
+              <thead><tr><th>文件名</th><th>大小</th><th>备份时间</th><th>下载</th></tr></thead>
+              <tbody id="bkListBody"></tbody>
+            </table>
+          </div>
+          <div class="empty" id="bkListEmpty" style="display:none;">暂无备份文件，点击「立即备份」生成第一份备份。</div>
+        </div>
+      </section>
+
+      <!-- ============ 操作日志（管理员） ============ -->
+      <section class="section" id="sec-logs">
+        <div class="page-title">操作日志 <span style="font-size:13px;color:var(--text-2);font-weight:400;">（关键操作留痕，默认查询最近 7 天）</span></div>
+        <div class="toolbar">
+          <input type="date" id="logFrom" title="开始日期（含当天）">
+          <span style="color:var(--text-2);">至</span>
+          <input type="date" id="logTo" title="结束日期（含当天）">
+          <select id="logActor" style="width:auto;"><option value="">全部成员</option></select>
+          <select id="logAction" style="width:auto;"><option value="">全部操作</option></select>
+          <input type="text" id="logKeyword" placeholder="搜索单号/对象/详情/IP...">
+          <button class="btn primary" onclick="loadLogs(1)">🔍 查询</button>
+          <button class="btn" onclick="resetLogFilter()">重置</button>
+          <button class="btn" onclick="exportLogs()">⬇ 导出日志 CSV</button>
+        </div>
+        <div class="card table-scroll">
+          <table>
+            <thead>
+              <tr><th>时间</th><th>成员</th><th>账号(角色)</th><th>操作</th><th>对象</th><th>详情</th><th>IP</th></tr>
+            </thead>
+            <tbody id="logBody"></tbody>
+          </table>
+          <div class="empty" id="logEmpty" style="display:none;">暂无操作日志</div>
+          <div class="pager" id="logPager"></div>
+        </div>
+        <div class="qr-tip" style="margin-top:12px;">
+          <b>说明：</b>日志由服务端按天写入 <code>data/logs/</code> 目录（默认保留 180 天），记录登录、借用、归还、库存与用户管理等关键操作；<br>
+          本页按需加载，不随 30 秒自动刷新；「导出日志 CSV」会带上当前筛选条件（单次最多 20000 条）。
         </div>
       </section>
 
@@ -429,8 +519,10 @@
         $('#userRole').textContent = currentUser.role === 'admin' ? '管理员' : '运行人员';
         if (currentUser.role === 'admin') {
           $('#menuUsers').style.display = 'flex';
+          $('#menuLogs').style.display = 'flex';
           $('#btnBackup').style.display = 'flex';
           $('#btnRestore').style.display = 'flex';
+          $('#backupCard').style.display = 'block';
         }
         if (d.mustChangePassword) $('#pwdBanner').style.display = 'flex';
         loadStats(); loadActive(); loadArchive();
@@ -490,6 +582,8 @@
         if (a.dataset.sec === 'qr') genQR();
         if (a.dataset.sec === 'active') loadActive();
         if (a.dataset.sec === 'inv') loadInventory();
+        if (a.dataset.sec === 'logs') initLogs();
+        if (a.dataset.sec === 'export' && currentUser && currentUser.role === 'admin') loadBackupSettings();
       });
     });
 
@@ -504,6 +598,8 @@
         $('#stArchived').textContent = d.archived;
         $('#menuActive').textContent = d.active;
         $('#menuArchive').textContent = d.archived;
+        $('#stTotal').textContent = (d.total === undefined || d.total === null) ? '—' : d.total;
+        renderDataHealth(d);
         // 渲染总览页超期列表
         const ol = $('#overdueList');
         if (d.overdueList && d.overdueList.length) {
@@ -1025,6 +1121,247 @@
       if (pwd.length < 6) return showToast('密码至少 6 位', 'err');
       api('/api/users/' + id + '/reset-password', { method: 'POST', body: JSON.stringify({ password: pwd }) })
         .then(() => showToast('密码已重置', 'ok')).catch(e => showToast(e.message, 'err'));
+    }
+
+    /* ============ 数据健康 / 备份提醒（概览） ============ */
+    function renderDataHealth(d) {
+      const h = d.dataHealth || {};
+      const qn = Number(h.quarantineCount) || 0;
+      const dh = $('#dataHealthBanner');
+      if (qn > 0) {
+        $('#dataHealthTitle').textContent = '⚠️ 检测到 ' + qn + ' 个损坏的数据文件，已自动隔离';
+        $('#dataHealthDetail').textContent = '损坏文件已复制到 data/quarantine/ 目录留证，系统已尝试用 .bak 自动恢复；当前借用记录文件 '
+          + fmtSize(h.borrowsBytes) + '。请勿删除 quarantine 目录，并尽快执行一次备份。';
+        dh.classList.add('show');
+      } else {
+        dh.classList.remove('show');
+      }
+      const bAt = d.lastBackupAt || null;
+      $('#stBackupAt').textContent = bAt ? fmt(bAt) : '从未备份';
+      $('#stBackupLbl').textContent = '上次备份时间' + (d.lastBackupOk === false ? '（上次失败）' : '');
+      const t = bAt ? new Date(bAt).getTime() : NaN;
+      const stale = !Number.isFinite(t) || (Date.now() - t) > 14 * 86400000;
+      if (stale) {
+        $('#backupStaleDetail').textContent = bAt
+          ? ('上次备份时间 ' + fmt(bAt) + '，已超过 14 天，建议立即到「数据导出」页执行一次备份。')
+          : '尚未执行过任何备份，建议立即到「数据导出」页执行一次备份。';
+        $('#backupStaleBanner').classList.add('show');
+      } else {
+        $('#backupStaleBanner').classList.remove('show');
+      }
+    }
+    function fmtSize(b) {
+      const n = Number(b);
+      if (!Number.isFinite(n) || n < 0) return '—';
+      if (n < 1024) return n + ' B';
+      if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+      return (n / 1048576).toFixed(2) + ' MB';
+    }
+
+    /* ============ 操作日志（管理员） ============ */
+    // action → 中文标签，与契约 §5 表格完全一致（后端同源）
+    const LOG_ACTIONS = [
+      ['auth.login', '登录'], ['auth.login_fail', '登录失败'], ['auth.logout', '退出登录'], ['auth.password_change', '修改自己的密码'],
+      ['borrow.submit', '借用人提交借用申请'], ['borrow.confirm', '确认借用'], ['borrow.update', '修改借用记录'], ['borrow.return', '归还确认'],
+      ['borrow.cancel', '取消/驳回'], ['borrow.delete', '删除归档记录'], ['borrow.borrower_return', '借用人声明归还'],
+      ['inventory.add', '新增物品'], ['inventory.import', '导入库存'], ['inventory.update', '修改库存数量'], ['inventory.delete', '删除物品'],
+      ['user.add', '新增用户'], ['user.update', '修改用户'], ['user.delete', '删除用户'], ['user.reset_password', '重置用户密码'],
+      ['data.export', '导出借用记录CSV'], ['data.backup_manual', '手动备份'], ['data.backup_auto', '自动备份'],
+      ['backup.settings_update', '修改自动备份设置'], ['data.restore', '数据还原']
+    ];
+    const LOG_LABEL = {};
+    LOG_ACTIONS.forEach(p => { LOG_LABEL[p[0]] = p[1]; });
+    const ROLE_LABEL = { admin: '管理员', operator: '运行人员', borrower: '借用人' };
+    const LOG_PAGE_SIZE = 50;
+    let logsInited = false, logList = [], logPage = 1, logTotal = 0;
+
+    function toDateStr(d) {
+      const p = n => String(n).padStart(2, '0');
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+    }
+    function initLogs() {
+      if (!currentUser || currentUser.role !== 'admin') return;
+      if (!logsInited) {
+        logsInited = true;
+        $('#logAction').innerHTML = '<option value="">全部操作</option>' +
+          LOG_ACTIONS.map(p => '<option value="' + esc(p[0]) + '">' + esc(p[1]) + '</option>').join('');
+        $('#logKeyword').addEventListener('keydown', e => { if (e.key === 'Enter') loadLogs(1); });
+        loadLogActors();
+        resetLogFilter();
+        return;
+      }
+      loadLogs(logPage);
+    }
+    function resetLogFilter() {
+      const now = new Date();
+      $('#logFrom').value = toDateStr(new Date(now.getTime() - 6 * 86400000));
+      $('#logTo').value = toDateStr(now);
+      $('#logActor').value = '';
+      $('#logAction').value = '';
+      $('#logKeyword').value = '';
+      loadLogs(1);
+    }
+    async function loadLogActors() {
+      try {
+        const d = await api('/api/users');
+        const cur = $('#logActor').value;
+        $('#logActor').innerHTML = '<option value="">全部成员</option>' +
+          (d.list || []).map(u => '<option value="' + esc(u.displayName) + '">' + esc(u.displayName) + '</option>').join('');
+        $('#logActor').value = cur;
+      } catch (e) { /* 成员下拉失败不影响日志查询 */ }
+    }
+    function logQueryParams(withPage) {
+      const q = new URLSearchParams();
+      const from = $('#logFrom').value, to = $('#logTo').value;
+      if (from) q.set('from', from);
+      if (to) q.set('to', to);
+      if ($('#logActor').value) q.set('actor', $('#logActor').value);
+      if ($('#logAction').value) q.set('action', $('#logAction').value);
+      const kw = $('#logKeyword').value.trim();
+      if (kw) q.set('keyword', kw);
+      if (withPage) { q.set('page', String(logPage)); q.set('pageSize', String(LOG_PAGE_SIZE)); }
+      return q;
+    }
+    async function loadLogs(page) {
+      if (!currentUser || currentUser.role !== 'admin') return;
+      const n = Number(page);
+      if (Number.isInteger(n) && n > 0) logPage = n;
+      try {
+        const d = await api('/api/logs?' + logQueryParams(true).toString());
+        logList = d.list || [];
+        logTotal = Number(d.total) || 0;
+        if (Number(d.page) > 0) logPage = Number(d.page);
+        renderLogs();
+      } catch (e) {
+        logList = []; logTotal = 0;
+        renderLogs();
+        showToast(e.message, 'err');
+      }
+    }
+    function renderLogs() {
+      $('#logEmpty').style.display = logList.length ? 'none' : 'block';
+      $('#logBody').innerHTML = logList.map(l => {
+        const label = LOG_LABEL[l.action] || l.action || '—';
+        const role = ROLE_LABEL[l.role] || l.role || '';
+        const acct = (l.username || '—') + (role ? '（' + role + '）' : '');
+        const detail = l.detail || '—';
+        const failMark = (l.result && l.result !== 'ok') ? ' <span class="badge overdue">' + esc(l.result) + '</span>' : '';
+        return '<tr>' +
+          '<td class="t">' + fmt(l.at) + '</td>' +
+          '<td><b>' + esc(l.actor || '—') + '</b></td>' +
+          '<td>' + esc(acct) + '</td>' +
+          '<td>' + esc(label) + failMark + '</td>' +
+          '<td>' + esc(l.target || '—') + '</td>' +
+          '<td><span class="log-detail" title="' + esc(detail) + '">' + esc(trunc(detail, 60)) + '</span></td>' +
+          '<td>' + esc(l.ip || '—') + '</td>' +
+          '</tr>';
+      }).join('');
+      renderLogPager();
+    }
+    function renderLogPager() {
+      const pages = Math.max(1, Math.ceil(logTotal / LOG_PAGE_SIZE));
+      const p = Math.min(Math.max(1, logPage), pages);
+      const prev = p > 1
+        ? '<button class="btn sm" onclick="loadLogs(' + (p - 1) + ')">← 上一页</button>'
+        : '<button class="btn sm" disabled>← 上一页</button>';
+      const next = p < pages
+        ? '<button class="btn sm" onclick="loadLogs(' + (p + 1) + ')">下一页 →</button>'
+        : '<button class="btn sm" disabled>下一页 →</button>';
+      $('#logPager').innerHTML = prev + '<span>共 ' + logTotal + ' 条 · 第 ' + p + ' / ' + pages + ' 页</span>' + next;
+    }
+    function exportLogs() {
+      const q = logQueryParams(false).toString();
+      location.href = '/api/logs/export' + (q ? '?' + q : '');
+    }
+
+    /* ============ 自动备份设置（管理员） ============ */
+    let backupFiles = [];
+    function fillBkTimeOptions() {
+      const p = n => String(n).padStart(2, '0');
+      $('#bkHour').innerHTML = Array.from({ length: 24 }, (_, i) => '<option value="' + i + '">' + p(i) + '</option>').join('');
+      $('#bkMinute').innerHTML = Array.from({ length: 60 }, (_, i) => '<option value="' + i + '">' + p(i) + '</option>').join('');
+    }
+    async function loadBackupSettings() {
+      if (!currentUser || currentUser.role !== 'admin') return;
+      try {
+        const d = await api('/api/backup/settings');
+        const s = d.settings || {};
+        fillBkTimeOptions();
+        $('#bkEnabled').checked = s.enabled !== false;
+        $('#bkWeekday').value = String(s.weekday === undefined || s.weekday === null ? 3 : s.weekday);
+        $('#bkHour').value = String(s.hour === undefined || s.hour === null ? 14 : s.hour);
+        $('#bkMinute').value = String(s.minute === undefined || s.minute === null ? 0 : s.minute);
+        $('#bkKeep').value = String(s.keep === undefined || s.keep === null ? 12 : s.keep);
+        renderBackupStatus(s, d.scheduler);
+      } catch (e) { showToast(e.message, 'err'); }
+      loadBackupList();
+    }
+    async function loadBackupList() {
+      try {
+        const d = await api('/api/backup/list');
+        backupFiles = Array.isArray(d.list) ? d.list : [];
+        renderBackupFiles();
+      } catch (e) { showToast(e.message, 'err'); }
+    }
+    function renderBackupStatus(s, sch) {
+      $('#bkLastRun').textContent = s.lastRunAt ? fmt(s.lastRunAt) : '从未备份';
+      const r = s.lastResult;
+      let txt = '—';
+      if (r && typeof r === 'object') {
+        if (r.ok) txt = '成功' + (r.jsonName ? '：' + r.jsonName + (r.csvName ? ' / ' + r.csvName : '') : '');
+        else txt = '失败：' + (r.error || '未知错误');
+      }
+      const el = $('#bkLastResult');
+      el.textContent = txt;
+      el.style.color = (r && r.ok === false) ? 'var(--danger)' : '';
+      $('#bkScheduler').textContent = sch
+        ? (sch.running ? ('运行中' + (sch.nextRunAt ? '，下次 ' + fmt(sch.nextRunAt) : '')) : '未运行')
+        : '—';
+    }
+    function renderBackupFiles() {
+      const list = backupFiles || [];
+      $('#bkListEmpty').style.display = list.length ? 'none' : 'block';
+      $('#bkListBody').innerHTML = list.map(f => {
+        const name = String(f.name || '');
+        return '<tr>' +
+          '<td style="word-break:break-all;">' + esc(name) + '</td>' +
+          '<td>' + fmtSize(f.bytes) + '</td>' +
+          '<td class="t">' + fmt(f.mtime) + '</td>' +
+          '<td><a class="btn sm" href="/api/backup/download/' + encodeURIComponent(name) + '">⬇ 下载</a></td>' +
+          '</tr>';
+      }).join('');
+    }
+    async function saveBackupSettings() {
+      const weekday = Number($('#bkWeekday').value);
+      const hour = Number($('#bkHour').value);
+      const minute = Number($('#bkMinute').value);
+      const keep = Number($('#bkKeep').value);
+      if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) return showToast('备份星期需为 周日…周六', 'err');
+      if (!Number.isInteger(hour) || hour < 0 || hour > 23) return showToast('备份小时需为 0-23 的整数', 'err');
+      if (!Number.isInteger(minute) || minute < 0 || minute > 59) return showToast('备份分钟需为 0-59 的整数', 'err');
+      if (!Number.isInteger(keep) || keep < 1 || keep > 100) return showToast('保留份数需为 1-100 的整数', 'err');
+      try {
+        await api('/api/backup/settings', {
+          method: 'PUT',
+          body: JSON.stringify({ enabled: $('#bkEnabled').checked, weekday, hour, minute, keep })
+        });
+        showToast('自动备份设置已保存', 'ok');
+        loadBackupSettings();
+      } catch (e) { showToast(e.message, 'err'); }
+    }
+    async function runBackupNow() {
+      if (!confirm('立即执行一次数据备份？（生成 JSON + CSV 两个文件）')) return;
+      try {
+        const d = await api('/api/backup/run', { method: 'POST' });
+        const r = d.result || {};
+        if (d.ok && r.ok) {
+          showToast('备份成功：' + (r.jsonName || '') + (r.csvName ? ' / ' + r.csvName : ''), 'ok');
+        } else {
+          showToast('备份失败：' + (r.error || '未知错误'), 'err');
+        }
+        loadBackupSettings();
+        loadStats();
+      } catch (e) { showToast(e.message, 'err'); }
     }
 
     init();
