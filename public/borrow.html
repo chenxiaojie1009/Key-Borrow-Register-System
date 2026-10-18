@@ -32,7 +32,7 @@
     .it-name-box { position: relative; }
     .it-avail { font-size: 12px; color: #1559a5; margin-top: 4px; display: flex; align-items: center; gap: 4px; }
     .it-avail .low { color: #e34d59; }
-    .it-suggest { position: absolute; top: calc(100% + 2px); left: 0; right: 0; background: #fff; border: 1px solid #dee0e3; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.12); z-index: 40; max-height: 210px; overflow-y: auto; display: none; }
+    .it-suggest { position: absolute; top: calc(100% + 2px); left: 0; right: 0; max-height: 46vh; overflow-y: auto; -webkit-overflow-scrolling: touch; background: #fff; border: 1px solid #dee0e3; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.12); z-index: 40; max-height: 210px; overflow-y: auto; display: none; }
     .it-suggest.show { display: block; }
     .it-suggest .sg-item { padding: 9px 12px; cursor: pointer; font-size: 14px; display: flex; justify-content: space-between; align-items: center; gap: 8px; border-bottom: 1px solid #f5f6f7; }
     .it-suggest .sg-item:last-child { border-bottom: none; }
@@ -317,9 +317,9 @@
       const suggest = row.querySelector('.it-suggest');
       const avail = row.querySelector('.it-avail');
       const qtyInput = row.querySelector('.it-qty');
-      let timer = null, selected = false;
+      let timer = null, selected = false, pickLockUntil = 0, suppressUntil = 0;
 
-      const hideSuggest = () => { suggest.classList.remove('show'); };
+      const hideSuggest = () => { clearTimeout(timer); suggest.classList.remove('show'); };
       const setAvail = (txt, cls) => { avail.innerHTML = txt; avail.style.display = txt ? 'block' : 'none'; avail.className = 'it-avail' + (cls ? ' ' + cls : ''); };
 
       const syncType = () => {
@@ -333,6 +333,7 @@
 
       const triggerSearch = (q) => {
         clearTimeout(timer);
+        if (Date.now() < suppressUntil) return; // 刚选完物品：排队中的联想请求直接丢弃，不再弹列表
         const type = s.value;
         if (!type || type === '其他') { hideSuggest(); return; }
         timer = setTimeout(async () => {
@@ -346,7 +347,9 @@
                 const el = document.createElement('div');
                 el.className = 'sg-item';
                 el.innerHTML = '<span class="sg-name">' + esc(it.itemName) + '</span><span class="sg-avail">可用 ' + it.available + ' 件</span>';
-                el.addEventListener('mousedown', e => { e.preventDefault(); pick(it); });
+                const onPick = e => { e.preventDefault(); e.stopPropagation(); pick(it); };
+                el.addEventListener('mousedown', onPick); // 桌面：按下即选，避免先失焦
+                el.addEventListener('click', onPick);     // 手机/WebView：mousedown 可能不触发，click 才可靠
                 suggest.appendChild(el);
               });
               suggest.classList.add('show');
@@ -362,6 +365,10 @@
       };
 
       const pick = (it) => {
+        if (Date.now() < pickLockUntil) return; // 手机上一次点按会连发 touch/mouse/click 多个事件，只处理第一次
+        pickLockUntil = Date.now() + 350;
+        clearTimeout(timer);                    // 关键：取消还在排队的联想请求，否则 300ms 后列表会又弹出来
+        suppressUntil = Date.now() + 800;
         nameInput.value = it.itemName;
         selected = true;
         setAvail('<span>『' + esc(it.itemType) + '』可用 ' + it.available + ' 件</span>' + (it.available > 1 ? '，本次借用请勿超过' : ''));
@@ -377,6 +384,7 @@
         triggerSearch(nameInput.value.trim());
       });
       nameInput.addEventListener('focus', () => {
+        if (Date.now() < suppressUntil) return; // 刚选完不要立刻再把列表弹出来
         if (s.value && s.value !== '其他' && !selected) triggerSearch(nameInput.value.trim());
       });
       nameInput.addEventListener('blur', () => setTimeout(hideSuggest, 150));
